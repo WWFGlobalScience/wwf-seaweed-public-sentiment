@@ -1,6 +1,7 @@
-"""Prepare workbook scaffolding for the future OpenAI analysis workflow."""
+"""Run OpenAI analysis for configured Excel workbook rows."""
 
 import argparse
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,22 @@ from typing import Any
 
 TIMESTAMP_TOKEN = "{TIMESTAMP}"
 TIMESTAMP_FORMAT = "%Y-%m-%d-%H-%M-%S"
+ANALYSIS_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "label": {"type": "string"},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+        "one_sentence_rationale": {"type": "string"},
+        "evidence_quote": {"type": "string"},
+    },
+    "required": [
+        "label",
+        "confidence",
+        "one_sentence_rationale",
+        "evidence_quote",
+    ],
+    "additionalProperties": False,
+}
 
 
 class ConfigError(ValueError):
@@ -33,7 +50,10 @@ class AnalysisWorkItem:
     """Prepared article text for a future model call."""
 
     analysis_name: str
+    worksheet_name: str
     row_number: int
+    output_label_column: int
+    output_evidence_quote_column: int
     text: str
 
 
@@ -56,14 +76,23 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description=(
-            "Prepare an Excel workbook scaffold for the seaweed public "
-            "sentiment analysis workflow."
+            "Run configured OpenAI analyses for the seaweed public sentiment "
+            "Excel workflow."
         )
     )
     parser.add_argument(
         "config",
         type=Path,
         help="Path to the YAML configuration file.",
+    )
+    parser.add_argument(
+        "--limit-analysis-calls",
+        type=int,
+        default=None,
+        help=(
+            "Maximum OpenAI calls to make per configured analysis. Useful for "
+            "debugging."
+        ),
     )
     return parser.parse_args()
 
@@ -279,14 +308,103 @@ def ensure_output_column(
     return column_index
 
 
-def prepare_workbook(runtime_config: RuntimeConfig) -> list[AnalysisWorkItem]:
-    """Prepare the output workbook and future analysis text.
+def create_openai_client(api_key_file: Path) -> Any:
+    """Create an OpenAI client from a configured API key file.
+
+    Args:
+        api_key_file: Path to a text file containing an OpenAI API key.
+
+    Returns:
+        OpenAI client instance.
+
+    Raises:
+        ConfigError: If the OpenAI SDK is not installed or the key file is empty.
+    """
+    try:
+        from openai import OpenAI
+    except ImportError as error:
+        raise ConfigError(
+            "openai is required to run analysis calls. "
+            "Install dependencies with `pip install -r requirements.txt`."
+        ) from error
+
+    api_key = api_key_file.read_text(encoding="utf-8").strip()
+    if not api_key:
+        raise ConfigError(f"OpenAI key file is empty: {api_key_file}")
+    return OpenAI(api_key=api_key)
+
+
+def call_openai_analysis(
+        client: Any, model: str, prompt: str, article_text: str) -> dict[str, str]:
+    """Classify one article with OpenAI and parse the JSON result.
+
+    Args:
+        client: OpenAI client instance.
+        model: OpenAI model configured for the run.
+        prompt: Analysis prompt text.
+        article_text: Combined headline and body text to analyze.
+
+    Returns:
+        Parsed JSON response from the model.
+
+    Raises:
+        ConfigError: If the response is not valid JSON with required fields.
+    """
+    try:
+        response = client.responses.create(
+            model=model,
+            input=[
+                {
+                    "role": "system",
+                    "content": prompt,
+                },
+                {
+                    "role": "user",
+                    "content": f"Article text:\n\n{article_text}",
+                },
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "article_analysis_result",
+                    "strict": True,
+                    "schema": ANALYSIS_RESPONSE_SCHEMA,
+                }
+            },
+        )
+    except Exception as error:
+        raise ConfigError(f"OpenAI request failed: {error}") from error
+
+    try:
+        result = json.loads(response.output_text)
+    except json.JSONDecodeError as error:
+        raise ConfigError(
+            f"OpenAI response was not valid JSON: {response.output_text}"
+        ) from error
+
+    if not isinstance(result, dict):
+        raise ConfigError(
+            f"OpenAI response JSON must be an object: {response.output_text}")
+    required_fields = {"label", "confidence", "one_sentence_rationale", "evidence_quote"}
+    missing_fields = sorted(required_fields.difference(result))
+    if missing_fields:
+        raise ConfigError(
+            f"OpenAI response missing required field(s): "
+            f"{', '.join(missing_fields)}")
+    return result
+
+
+def process_workbook(
+        runtime_config: RuntimeConfig,
+        limit_analysis_calls: int | None) -> list[AnalysisWorkItem]:
+    """Run configured analyses and write results to an output workbook.
 
     Args:
         runtime_config: Resolved runtime configuration.
+        limit_analysis_calls: Optional maximum OpenAI calls per analysis.
 
     Returns:
-        Prepared article text items for future model calls.
+        Article text items sent to OpenAI.
 
     Raises:
         ConfigError: If a configured sheet or input column is missing.
@@ -299,10 +417,14 @@ def prepare_workbook(runtime_config: RuntimeConfig) -> list[AnalysisWorkItem]:
             "Install dependencies with `pip install -r requirements.txt`."
         ) from error
 
+    client = create_openai_client(runtime_config.openai_key_file)
     workbook = load_workbook(runtime_config.input_file)
     work_items = []
 
     for analysis_config in runtime_config.analyses:
+        prompt = analysis_config.prompt_file.read_text(encoding="utf-8").strip()
+        if not prompt:
+            raise ConfigError(f"Prompt file is empty: {analysis_config.prompt_file}")
         if analysis_config.sheet_name not in workbook.sheetnames:
             raise ConfigError(
                 f"Worksheet not found for {analysis_config.name}: "
@@ -321,16 +443,27 @@ def prepare_workbook(runtime_config: RuntimeConfig) -> list[AnalysisWorkItem]:
                 f"Missing input column(s) on {analysis_config.sheet_name}: "
                 f"{', '.join(missing_columns)}")
 
-        ensure_output_column(
+        output_label_column = ensure_output_column(
             worksheet, header_map, analysis_config.output_label_column)
-        ensure_output_column(
+        output_evidence_quote_column = ensure_output_column(
             worksheet,
             header_map,
             analysis_config.output_evidence_quote_column)
 
         headline_column = header_map[analysis_config.headline_column]
         body_column = header_map[analysis_config.body_column]
+        analysis_call_count = 0
         for row_number in range(2, worksheet.max_row + 1):
+            if (
+                    limit_analysis_calls is not None and
+                    analysis_call_count >= limit_analysis_calls):
+                break
+            existing_label = worksheet.cell(
+                row=row_number, column=output_label_column).value
+            existing_quote = worksheet.cell(
+                row=row_number, column=output_evidence_quote_column).value
+            if existing_label or existing_quote:
+                continue
             headline = worksheet.cell(row=row_number, column=headline_column).value
             body = worksheet.cell(row=row_number, column=body_column).value
             text_parts = [
@@ -339,11 +472,28 @@ def prepare_workbook(runtime_config: RuntimeConfig) -> list[AnalysisWorkItem]:
                 if value is not None and str(value).strip()
             ]
             if text_parts:
+                article_text = "\n\n".join(text_parts)
                 work_items.append(AnalysisWorkItem(
                     analysis_name=analysis_config.name,
+                    worksheet_name=analysis_config.sheet_name,
                     row_number=row_number,
-                    text="\n\n".join(text_parts),
+                    output_label_column=output_label_column,
+                    output_evidence_quote_column=output_evidence_quote_column,
+                    text=article_text,
                 ))
+                result = call_openai_analysis(
+                    client,
+                    runtime_config.openai_model,
+                    prompt,
+                    article_text)
+                worksheet.cell(
+                    row=row_number,
+                    column=output_label_column).value = result["label"]
+                worksheet.cell(
+                    row=row_number,
+                    column=output_evidence_quote_column).value = (
+                        result["evidence_quote"])
+                analysis_call_count += 1
 
     runtime_config.output_file.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(runtime_config.output_file)
@@ -356,7 +506,8 @@ def main() -> None:
     config_path = args.config.resolve()
     try:
         runtime_config = validate_config(load_config(config_path), config_path)
-        work_items = prepare_workbook(runtime_config)
+        work_items = process_workbook(
+            runtime_config, args.limit_analysis_calls)
     except ConfigError as error:
         raise SystemExit(f"Configuration error: {error}") from error
 
@@ -367,9 +518,8 @@ def main() -> None:
     print(f"- openai_key_file: {runtime_config.openai_key_file}")
     for analysis_config in runtime_config.analyses:
         print(f"- {analysis_config.name}_prompt_file: {analysis_config.prompt_file}")
-    print(f"Prepared {len(work_items)} article text item(s).")
+    print(f"Analyzed {len(work_items)} article text item(s).")
     print(f"Output workbook saved to: {runtime_config.output_file}")
-    print("OpenAI calls are not implemented yet.")
 
 
 if __name__ == "__main__":
