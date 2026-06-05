@@ -1,7 +1,11 @@
 """Run OpenAI analysis for configured Excel workbook rows."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import as_completed
 import json
+import random
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +14,10 @@ from typing import Any
 
 TIMESTAMP_TOKEN = "{TIMESTAMP}"
 TIMESTAMP_FORMAT = "%Y-%m-%d-%H-%M-%S"
+MODEL_TOKEN = "{model}"
+DEFAULT_MAX_WORKERS = 4
+MAX_OPENAI_ATTEMPTS = 5
+RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 ANALYSIS_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -40,7 +48,7 @@ class AnalysisConfig:
     sheet_name: str
     prompt_file: Path
     headline_column: str
-    body_column: str
+    body_column: str | None
     output_label_column: str
     output_evidence_quote_column: str
 
@@ -55,6 +63,24 @@ class AnalysisWorkItem:
     output_label_column: int
     output_evidence_quote_column: int
     text: str
+
+
+@dataclass(frozen=True)
+class AnalysisResult:
+    """OpenAI result for a prepared worksheet row."""
+
+    item: AnalysisWorkItem
+    label: str
+    evidence_quote: str
+
+
+@dataclass(frozen=True)
+class AnalysisBatch:
+    """Prepared rows and prompt for one configured analysis."""
+
+    config: AnalysisConfig
+    prompt: str
+    work_items: tuple[AnalysisWorkItem, ...]
 
 
 @dataclass(frozen=True)
@@ -92,6 +118,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Maximum OpenAI calls to make per configured analysis. Useful for "
             "debugging."
+        ),
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=DEFAULT_MAX_WORKERS,
+        help=(
+            "Maximum concurrent OpenAI calls. Lower this if you see rate "
+            "limit errors."
         ),
     )
     return parser.parse_args()
@@ -196,6 +231,38 @@ def validate_required_file(path: Path, label: str) -> None:
         raise ConfigError(f"{label} not found: {path}")
 
 
+def model_column_prefix(model: str) -> str:
+    """Convert a model name into a spreadsheet column-name prefix.
+
+    Args:
+        model: OpenAI model name from the configuration.
+
+    Returns:
+        Lowercase model name with non-alphanumeric characters converted to
+        underscores.
+    """
+    sanitized_characters = [
+        character.lower() if character.isalnum() else "_"
+        for character in model
+    ]
+    return "_".join(
+        segment for segment in "".join(sanitized_characters).split("_")
+        if segment)
+
+
+def resolve_output_column_name(column_name: str, model: str) -> str:
+    """Resolve configured output column placeholders.
+
+    Args:
+        column_name: Configured output column name.
+        model: OpenAI model name from the configuration.
+
+    Returns:
+        Output column name with supported placeholders resolved.
+    """
+    return column_name.replace(MODEL_TOKEN, model_column_prefix(model))
+
+
 def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
     """Validate configured paths and return the resolved runtime configuration.
 
@@ -242,7 +309,10 @@ def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
         output_columns = require_mapping(
             analysis_config, "output_columns", context)
         require_string(input_columns, "headline", f"{context}.input_columns")
-        require_string(input_columns, "body", f"{context}.input_columns")
+        body_column = None
+        if "body" in input_columns and input_columns["body"] is not None:
+            body_column = require_string(
+                input_columns, "body", f"{context}.input_columns")
         require_string(output_columns, "label", f"{context}.output_columns")
         require_string(
             output_columns, "evidence_quote", f"{context}.output_columns")
@@ -253,14 +323,17 @@ def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
             prompt_file=prompt_file,
             headline_column=require_string(
                 input_columns, "headline", f"{context}.input_columns"),
-            body_column=require_string(
-                input_columns, "body", f"{context}.input_columns"),
-            output_label_column=require_string(
-                output_columns, "label", f"{context}.output_columns"),
-            output_evidence_quote_column=require_string(
-                output_columns,
-                "evidence_quote",
-                f"{context}.output_columns"),
+            body_column=body_column,
+            output_label_column=resolve_output_column_name(
+                require_string(
+                    output_columns, "label", f"{context}.output_columns"),
+                openai_model),
+            output_evidence_quote_column=resolve_output_column_name(
+                require_string(
+                    output_columns,
+                    "evidence_quote",
+                    f"{context}.output_columns"),
+                openai_model),
         ))
 
     return RuntimeConfig(
@@ -334,6 +407,21 @@ def create_openai_client(api_key_file: Path) -> Any:
     return OpenAI(api_key=api_key)
 
 
+def is_retryable_openai_error(error: Exception) -> bool:
+    """Determine whether an OpenAI exception should be retried.
+
+    Args:
+        error: Exception raised while calling OpenAI.
+
+    Returns:
+        Whether retrying the request is appropriate.
+    """
+    status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        return True
+    return status_code in RETRYABLE_STATUS_CODES
+
+
 def call_openai_analysis(
         client: Any, model: str, prompt: str, article_text: str) -> dict[str, str]:
     """Classify one article with OpenAI and parse the JSON result.
@@ -350,30 +438,36 @@ def call_openai_analysis(
     Raises:
         ConfigError: If the response is not valid JSON with required fields.
     """
-    try:
-        response = client.responses.create(
-            model=model,
-            input=[
-                {
-                    "role": "system",
-                    "content": prompt,
+    for attempt_index in range(MAX_OPENAI_ATTEMPTS):
+        try:
+            response = client.responses.create(
+                model=model,
+                input=[
+                    {
+                        "role": "system",
+                        "content": prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Article text:\n\n{article_text}",
+                    },
+                ],
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "article_analysis_result",
+                        "strict": True,
+                        "schema": ANALYSIS_RESPONSE_SCHEMA,
+                    }
                 },
-                {
-                    "role": "user",
-                    "content": f"Article text:\n\n{article_text}",
-                },
-            ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "article_analysis_result",
-                    "strict": True,
-                    "schema": ANALYSIS_RESPONSE_SCHEMA,
-                }
-            },
-        )
-    except Exception as error:
-        raise ConfigError(f"OpenAI request failed: {error}") from error
+            )
+            break
+        except Exception as error:
+            final_attempt = attempt_index == MAX_OPENAI_ATTEMPTS - 1
+            if final_attempt or not is_retryable_openai_error(error):
+                raise ConfigError(f"OpenAI request failed: {error}") from error
+            backoff_seconds = min(60, 2 ** attempt_index) + random.random()
+            time.sleep(backoff_seconds)
 
     try:
         result = json.loads(response.output_text)
@@ -394,33 +488,162 @@ def call_openai_analysis(
     return result
 
 
-def process_workbook(
-        runtime_config: RuntimeConfig,
+def collect_analysis_items(
+        worksheet: Any,
+        analysis_config: AnalysisConfig,
+        header_map: dict[str, int],
+        output_label_column: int,
+        output_evidence_quote_column: int,
         limit_analysis_calls: int | None) -> list[AnalysisWorkItem]:
-    """Run configured analyses and write results to an output workbook.
+    """Collect worksheet rows that need OpenAI analysis.
 
     Args:
+        worksheet: openpyxl worksheet to inspect.
+        analysis_config: Analysis configuration for this worksheet.
+        header_map: Worksheet header mapping.
+        output_label_column: One-based output label column index.
+        output_evidence_quote_column: One-based output evidence quote column index.
+        limit_analysis_calls: Optional maximum rows to analyze for this analysis.
+
+    Returns:
+        Prepared analysis work items.
+    """
+    headline_column = header_map[analysis_config.headline_column]
+    body_column = (
+        header_map[analysis_config.body_column]
+        if analysis_config.body_column
+        else None)
+    work_items = []
+    for row_number in range(2, worksheet.max_row + 1):
+        if (
+                limit_analysis_calls is not None and
+                len(work_items) >= limit_analysis_calls):
+            break
+        existing_label = worksheet.cell(
+            row=row_number, column=output_label_column).value
+        existing_quote = worksheet.cell(
+            row=row_number, column=output_evidence_quote_column).value
+        if existing_label or existing_quote:
+            continue
+        headline = worksheet.cell(row=row_number, column=headline_column).value
+        body = (
+            worksheet.cell(row=row_number, column=body_column).value
+            if body_column
+            else None)
+        text_parts = [
+            str(value).strip()
+            for value in (headline, body)
+            if value is not None and str(value).strip()
+        ]
+        if text_parts:
+            work_items.append(AnalysisWorkItem(
+                analysis_name=analysis_config.name,
+                worksheet_name=analysis_config.sheet_name,
+                row_number=row_number,
+                output_label_column=output_label_column,
+                output_evidence_quote_column=output_evidence_quote_column,
+                text="\n\n".join(text_parts),
+            ))
+    return work_items
+
+
+def run_parallel_openai_analysis(
+        client: Any,
+        model: str,
+        analysis_batches: list[AnalysisBatch],
+        max_workers: int) -> list[AnalysisResult]:
+    """Analyze prepared rows across all analyses with progress reporting.
+
+    Args:
+        client: OpenAI client instance.
+        model: OpenAI model configured for the run.
+        analysis_batches: Prepared worksheet rows grouped by analysis.
+        max_workers: Maximum concurrent OpenAI calls across all analyses.
+
+    Returns:
+        Results for completed OpenAI calls.
+
+    Raises:
+        ConfigError: If tqdm is unavailable or an OpenAI call fails.
+    """
+    try:
+        from tqdm import tqdm
+    except ImportError as error:
+        raise ConfigError(
+            "tqdm is required for progress reporting. "
+            "Install dependencies with `pip install -r requirements.txt`."
+        ) from error
+
+    all_work_items = [
+        item
+        for analysis_batch in analysis_batches
+        for item in analysis_batch.work_items
+    ]
+    if not all_work_items:
+        return []
+
+    worker_count = min(max_workers, len(all_work_items))
+    results = []
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_item = {}
+        progress_bars = {}
+        try:
+            for position, analysis_batch in enumerate(analysis_batches):
+                if not analysis_batch.work_items:
+                    continue
+                progress_bars[analysis_batch.config.name] = tqdm(
+                    total=len(analysis_batch.work_items),
+                    desc=f"{analysis_batch.config.name} analysis",
+                    unit="article",
+                    position=position,
+                )
+                for item in analysis_batch.work_items:
+                    future = executor.submit(
+                        call_openai_analysis,
+                        client,
+                        model,
+                        analysis_batch.prompt,
+                        item.text)
+                    future_to_item[future] = item
+
+            for future in as_completed(future_to_item):
+                item = future_to_item[future]
+                try:
+                    result = future.result()
+                except ConfigError as error:
+                    raise ConfigError(
+                        f"{item.analysis_name} row {item.row_number} failed: "
+                        f"{error}") from error
+                results.append(AnalysisResult(
+                    item=item,
+                    label=result["label"],
+                    evidence_quote=result["evidence_quote"],
+                ))
+                progress_bars[item.analysis_name].update(1)
+        finally:
+            for progress_bar in progress_bars.values():
+                progress_bar.close()
+    return results
+
+
+def collect_analysis_batches(
+        workbook: Any,
+        runtime_config: RuntimeConfig,
+        limit_analysis_calls: int | None) -> list[AnalysisBatch]:
+    """Collect all configured worksheet rows that need OpenAI analysis.
+
+    Args:
+        workbook: openpyxl workbook to inspect and update with output headers.
         runtime_config: Resolved runtime configuration.
         limit_analysis_calls: Optional maximum OpenAI calls per analysis.
 
     Returns:
-        Article text items sent to OpenAI.
+        Analysis batches with prompt text and prepared worksheet rows.
 
     Raises:
         ConfigError: If a configured sheet or input column is missing.
     """
-    try:
-        from openpyxl import load_workbook
-    except ImportError as error:
-        raise ConfigError(
-            "openpyxl is required to process Excel files. "
-            "Install dependencies with `pip install -r requirements.txt`."
-        ) from error
-
-    client = create_openai_client(runtime_config.openai_key_file)
-    workbook = load_workbook(runtime_config.input_file)
-    work_items = []
-
+    analysis_batches = []
     for analysis_config in runtime_config.analyses:
         prompt = analysis_config.prompt_file.read_text(encoding="utf-8").strip()
         if not prompt:
@@ -436,7 +659,7 @@ def process_workbook(
                 analysis_config.headline_column,
                 analysis_config.body_column,
             )
-            if column_name not in header_map
+            if column_name and column_name not in header_map
         ]
         if missing_columns:
             raise ConfigError(
@@ -449,65 +672,83 @@ def process_workbook(
             worksheet,
             header_map,
             analysis_config.output_evidence_quote_column)
+        work_items = collect_analysis_items(
+            worksheet,
+            analysis_config,
+            header_map,
+            output_label_column,
+            output_evidence_quote_column,
+            limit_analysis_calls,
+        )
+        analysis_batches.append(AnalysisBatch(
+            config=analysis_config,
+            prompt=prompt,
+            work_items=tuple(work_items),
+        ))
+    return analysis_batches
 
-        headline_column = header_map[analysis_config.headline_column]
-        body_column = header_map[analysis_config.body_column]
-        analysis_call_count = 0
-        for row_number in range(2, worksheet.max_row + 1):
-            if (
-                    limit_analysis_calls is not None and
-                    analysis_call_count >= limit_analysis_calls):
-                break
-            existing_label = worksheet.cell(
-                row=row_number, column=output_label_column).value
-            existing_quote = worksheet.cell(
-                row=row_number, column=output_evidence_quote_column).value
-            if existing_label or existing_quote:
-                continue
-            headline = worksheet.cell(row=row_number, column=headline_column).value
-            body = worksheet.cell(row=row_number, column=body_column).value
-            text_parts = [
-                str(value).strip()
-                for value in (headline, body)
-                if value is not None and str(value).strip()
-            ]
-            if text_parts:
-                article_text = "\n\n".join(text_parts)
-                work_items.append(AnalysisWorkItem(
-                    analysis_name=analysis_config.name,
-                    worksheet_name=analysis_config.sheet_name,
-                    row_number=row_number,
-                    output_label_column=output_label_column,
-                    output_evidence_quote_column=output_evidence_quote_column,
-                    text=article_text,
-                ))
-                result = call_openai_analysis(
-                    client,
-                    runtime_config.openai_model,
-                    prompt,
-                    article_text)
-                worksheet.cell(
-                    row=row_number,
-                    column=output_label_column).value = result["label"]
-                worksheet.cell(
-                    row=row_number,
-                    column=output_evidence_quote_column).value = (
-                        result["evidence_quote"])
-                analysis_call_count += 1
+
+def process_workbook(
+        runtime_config: RuntimeConfig,
+        limit_analysis_calls: int | None,
+        max_workers: int) -> list[AnalysisWorkItem]:
+    """Run configured analyses and write results to an output workbook.
+
+    Args:
+        runtime_config: Resolved runtime configuration.
+        limit_analysis_calls: Optional maximum OpenAI calls per analysis.
+        max_workers: Maximum concurrent OpenAI calls.
+
+    Returns:
+        Article text items sent to OpenAI.
+
+    Raises:
+        ConfigError: If a configured sheet or input column is missing.
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError as error:
+        raise ConfigError(
+            "openpyxl is required to process Excel files. "
+            "Install dependencies with `pip install -r requirements.txt`."
+        ) from error
+
+    if max_workers < 1:
+        raise ConfigError("--max-workers must be at least 1")
+    client = create_openai_client(runtime_config.openai_key_file)
+    workbook = load_workbook(runtime_config.input_file)
+    analysis_batches = collect_analysis_batches(
+        workbook, runtime_config, limit_analysis_calls)
+    analysis_results = run_parallel_openai_analysis(
+        client,
+        runtime_config.openai_model,
+        analysis_batches,
+        max_workers,
+    )
+    for analysis_result in analysis_results:
+        item = analysis_result.item
+        worksheet = workbook[item.worksheet_name]
+        worksheet.cell(
+            row=item.row_number,
+            column=item.output_label_column).value = analysis_result.label
+        worksheet.cell(
+            row=item.row_number,
+            column=item.output_evidence_quote_column).value = (
+                analysis_result.evidence_quote)
 
     runtime_config.output_file.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(runtime_config.output_file)
-    return work_items
+    return [analysis_result.item for analysis_result in analysis_results]
 
 
 def main() -> None:
-    """Validate configuration and prepare an output workbook scaffold."""
+    """Run configured OpenAI analyses and save the output workbook."""
     args = parse_args()
     config_path = args.config.resolve()
     try:
         runtime_config = validate_config(load_config(config_path), config_path)
         work_items = process_workbook(
-            runtime_config, args.limit_analysis_calls)
+            runtime_config, args.limit_analysis_calls, args.max_workers)
     except ConfigError as error:
         raise SystemExit(f"Configuration error: {error}") from error
 
