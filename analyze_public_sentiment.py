@@ -265,18 +265,6 @@ def resolve_output_column_name(column_name: str, model: str) -> str:
     return column_name.replace(MODEL_TOKEN, model_column_prefix(model))
 
 
-def sanitize_excel_cell_text(text: str) -> str:
-    """Remove characters Excel cells cannot store.
-
-    Args:
-        text: Model output text that will be written to an Excel cell.
-
-    Returns:
-        Text with Excel-illegal control characters removed.
-    """
-    return EXCEL_ILLEGAL_CHARACTERS_RE.sub("", text)
-
-
 def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
     """Validate configured paths and return the resolved runtime configuration.
 
@@ -744,12 +732,13 @@ def process_workbook(
         worksheet = workbook[item.worksheet_name]
         worksheet.cell(
             row=item.row_number,
-            column=item.output_label_column).value = sanitize_excel_cell_text(
-                analysis_result.label)
+            column=item.output_label_column).value = (
+                EXCEL_ILLEGAL_CHARACTERS_RE.sub("", analysis_result.label))
         worksheet.cell(
             row=item.row_number,
             column=item.output_evidence_quote_column).value = (
-                sanitize_excel_cell_text(analysis_result.evidence_quote))
+                EXCEL_ILLEGAL_CHARACTERS_RE.sub(
+                    "", analysis_result.evidence_quote))
 
     runtime_config.output_file.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(runtime_config.output_file)
