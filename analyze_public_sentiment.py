@@ -1,6 +1,7 @@
-"""Validate configuration for the future OpenAI analysis workflow."""
+"""Prepare workbook scaffolding for the future OpenAI analysis workflow."""
 
 import argparse
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,39 @@ class ConfigError(ValueError):
     """Error raised when the analysis configuration is invalid."""
 
 
+@dataclass(frozen=True)
+class AnalysisConfig:
+    """Configuration for one worksheet analysis."""
+
+    name: str
+    sheet_name: str
+    prompt_file: Path
+    headline_column: str
+    body_column: str
+    output_label_column: str
+    output_evidence_quote_column: str
+
+
+@dataclass(frozen=True)
+class AnalysisWorkItem:
+    """Prepared article text for a future model call."""
+
+    analysis_name: str
+    row_number: int
+    text: str
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    """Resolved runtime configuration for the analysis workflow."""
+
+    input_file: Path
+    output_file: Path
+    openai_key_file: Path
+    openai_model: str
+    analyses: tuple[AnalysisConfig, ...]
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments.
 
@@ -22,8 +56,8 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description=(
-            "Validate the YAML configuration for the seaweed public sentiment "
-            "analysis workflow."
+            "Prepare an Excel workbook scaffold for the seaweed public "
+            "sentiment analysis workflow."
         )
     )
     parser.add_argument(
@@ -133,15 +167,15 @@ def validate_required_file(path: Path, label: str) -> None:
         raise ConfigError(f"{label} not found: {path}")
 
 
-def validate_config(config: dict[str, Any], config_path: Path) -> dict[str, Path]:
-    """Validate configured paths and return the resolved file locations.
+def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
+    """Validate configured paths and return the resolved runtime configuration.
 
     Args:
         config: Parsed YAML configuration mapping.
         config_path: Path to the YAML configuration file.
 
     Returns:
-        Mapping of workflow path labels to resolved paths.
+        Resolved runtime configuration.
 
     Raises:
         ConfigError: If required configuration fields or files are missing.
@@ -160,16 +194,12 @@ def validate_config(config: dict[str, Any], config_path: Path) -> dict[str, Path
         config_dir)
     key_file = resolve_config_path(
         require_string(openai_config, "key", "config.openai"), config_dir)
-    require_string(openai_config, "model", "config.openai")
+    openai_model = require_string(openai_config, "model", "config.openai")
 
-    resolved_paths = {
-        "input_file": input_file,
-        "output_file": output_file,
-        "openai_key_file": key_file,
-    }
     validate_required_file(input_file, "Input Excel file")
     validate_required_file(key_file, "OpenAI key file")
 
+    analyses = []
     for analysis_name, analysis_config in analyses_config.items():
         if not isinstance(analysis_config, dict):
             raise ConfigError(
@@ -188,25 +218,158 @@ def validate_config(config: dict[str, Any], config_path: Path) -> dict[str, Path
         require_string(
             output_columns, "evidence_quote", f"{context}.output_columns")
         validate_required_file(prompt_file, f"{analysis_name} prompt file")
-        resolved_paths[f"{analysis_name}_prompt_file"] = prompt_file
+        analyses.append(AnalysisConfig(
+            name=analysis_name,
+            sheet_name=require_string(analysis_config, "sheet_name", context),
+            prompt_file=prompt_file,
+            headline_column=require_string(
+                input_columns, "headline", f"{context}.input_columns"),
+            body_column=require_string(
+                input_columns, "body", f"{context}.input_columns"),
+            output_label_column=require_string(
+                output_columns, "label", f"{context}.output_columns"),
+            output_evidence_quote_column=require_string(
+                output_columns,
+                "evidence_quote",
+                f"{context}.output_columns"),
+        ))
 
-    return resolved_paths
+    return RuntimeConfig(
+        input_file=input_file,
+        output_file=output_file,
+        openai_key_file=key_file,
+        openai_model=openai_model,
+        analyses=tuple(analyses),
+    )
+
+
+def map_header_columns(worksheet: Any) -> dict[str, int]:
+    """Map worksheet header names to one-based column indexes.
+
+    Args:
+        worksheet: openpyxl worksheet to inspect.
+
+    Returns:
+        Mapping from header name to one-based column index.
+    """
+    header_map = {}
+    for cell in worksheet[1]:
+        if cell.value is not None:
+            header_map[str(cell.value)] = cell.column
+    return header_map
+
+
+def ensure_output_column(
+        worksheet: Any, header_map: dict[str, int], column_name: str) -> int:
+    """Ensure an output column exists on a worksheet.
+
+    Args:
+        worksheet: openpyxl worksheet to update.
+        header_map: Existing worksheet header mapping.
+        column_name: Output column header to create if missing.
+
+    Returns:
+        One-based column index for the output column.
+    """
+    if column_name in header_map:
+        return header_map[column_name]
+    column_index = worksheet.max_column + 1
+    worksheet.cell(row=1, column=column_index).value = column_name
+    header_map[column_name] = column_index
+    return column_index
+
+
+def prepare_workbook(runtime_config: RuntimeConfig) -> list[AnalysisWorkItem]:
+    """Prepare the output workbook and future analysis text.
+
+    Args:
+        runtime_config: Resolved runtime configuration.
+
+    Returns:
+        Prepared article text items for future model calls.
+
+    Raises:
+        ConfigError: If a configured sheet or input column is missing.
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError as error:
+        raise ConfigError(
+            "openpyxl is required to process Excel files. "
+            "Install dependencies with `pip install -r requirements.txt`."
+        ) from error
+
+    workbook = load_workbook(runtime_config.input_file)
+    work_items = []
+
+    for analysis_config in runtime_config.analyses:
+        if analysis_config.sheet_name not in workbook.sheetnames:
+            raise ConfigError(
+                f"Worksheet not found for {analysis_config.name}: "
+                f"{analysis_config.sheet_name}")
+        worksheet = workbook[analysis_config.sheet_name]
+        header_map = map_header_columns(worksheet)
+        missing_columns = [
+            column_name for column_name in (
+                analysis_config.headline_column,
+                analysis_config.body_column,
+            )
+            if column_name not in header_map
+        ]
+        if missing_columns:
+            raise ConfigError(
+                f"Missing input column(s) on {analysis_config.sheet_name}: "
+                f"{', '.join(missing_columns)}")
+
+        ensure_output_column(
+            worksheet, header_map, analysis_config.output_label_column)
+        ensure_output_column(
+            worksheet,
+            header_map,
+            analysis_config.output_evidence_quote_column)
+
+        headline_column = header_map[analysis_config.headline_column]
+        body_column = header_map[analysis_config.body_column]
+        for row_number in range(2, worksheet.max_row + 1):
+            headline = worksheet.cell(row=row_number, column=headline_column).value
+            body = worksheet.cell(row=row_number, column=body_column).value
+            text_parts = [
+                str(value).strip()
+                for value in (headline, body)
+                if value is not None and str(value).strip()
+            ]
+            if text_parts:
+                work_items.append(AnalysisWorkItem(
+                    analysis_name=analysis_config.name,
+                    row_number=row_number,
+                    text="\n\n".join(text_parts),
+                ))
+
+    runtime_config.output_file.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(runtime_config.output_file)
+    return work_items
 
 
 def main() -> None:
-    """Validate the configured files and exit before analysis work begins."""
+    """Validate configuration and prepare an output workbook scaffold."""
     args = parse_args()
     config_path = args.config.resolve()
     try:
-        resolved_paths = validate_config(load_config(config_path), config_path)
+        runtime_config = validate_config(load_config(config_path), config_path)
+        work_items = prepare_workbook(runtime_config)
     except ConfigError as error:
         raise SystemExit(f"Configuration error: {error}") from error
 
     print("Configuration parsed successfully.")
     print("Resolved paths:")
-    for label, path in resolved_paths.items():
-        print(f"- {label}: {path}")
-    print("OpenAI calls and Excel processing are not implemented yet.")
+    print(f"- input_file: {runtime_config.input_file}")
+    print(f"- output_file: {runtime_config.output_file}")
+    print(f"- openai_key_file: {runtime_config.openai_key_file}")
+    for analysis_config in runtime_config.analyses:
+        print(f"- {analysis_config.name}_prompt_file: {analysis_config.prompt_file}")
+    print(f"Prepared {len(work_items)} article text item(s).")
+    print(f"Output workbook saved to: {runtime_config.output_file}")
+    print("OpenAI calls are not implemented yet.")
 
 
 if __name__ == "__main__":
