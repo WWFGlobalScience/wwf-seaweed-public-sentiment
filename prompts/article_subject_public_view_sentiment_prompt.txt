@@ -24,6 +24,12 @@ Definitions:
 - negative: Public or community views are presented as mostly opposed, concerned, or unfavorable.
 - neutral: Aquaculture is discussed, but public or community views are not clearly presented, or support and opposition are presented without a clear dominant direction.
 
+Evidence quote requirements:
+- For positive or negative labels, evidence_quote must be a short quote that directly shows the public or community view being classified.
+- For neutral labels, evidence_quote should quote the closest relevant passage showing that aquaculture is discussed without a clear public or community view.
+- For neutral labels, do not quote general aquaculture promotion, industry claims, government claims, or scientific claims as if they were public sentiment.
+- If no useful evidence quote exists for a neutral label, return an empty string for evidence_quote.
+
 Return only valid JSON with this shape:
 {
   "label": "positive | negative | neutral",
