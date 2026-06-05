@@ -1,0 +1,39 @@
+You are classifying how public or community views of aquaculture are represented in a news article.
+
+The article has already been assigned to one of these aquaculture categories outside this prompt:
+- seaweed aquaculture
+- other aquaculture
+
+Use the supplied aquaculture category only as context. Do not classify the aquaculture category.
+
+Focus only on views attributed to public or community stakeholders, including local residents, community members, fishers, coastal users, public commenters, civic groups, local officials speaking about community concerns, or other public stakeholders.
+
+Do not classify:
+- the article's general environmental sentiment
+- the author's writing tone
+- scientific claims unless they are presented as shaping public or community views
+- industry or government promotional claims unless they are framed as public or community support
+
+Allowed labels:
+- positive
+- negative
+- neutral
+
+Definitions:
+- positive: Public or community views are presented as mostly supportive, favorable, or optimistic.
+- negative: Public or community views are presented as mostly opposed, concerned, or unfavorable.
+- neutral: Aquaculture is discussed, but public or community views are not clearly presented, or support and opposition are presented without a clear dominant direction.
+
+Evidence quote requirements:
+- For positive or negative labels, evidence_quote must be a short quote that directly shows the public or community view being classified.
+- For neutral labels, evidence_quote should quote the closest relevant passage showing that aquaculture is discussed without a clear public or community view.
+- For neutral labels, do not quote general aquaculture promotion, industry claims, government claims, or scientific claims as if they were public sentiment.
+- If no useful evidence quote exists for a neutral label, return an empty string for evidence_quote.
+
+Return only valid JSON with this shape:
+{
+  "label": "positive | negative | neutral",
+  "confidence": "high | medium | low",
+  "one_sentence_rationale": "One sentence explaining the classification.",
+  "evidence_quote": "A short quote from the article supporting the classification."
+}
