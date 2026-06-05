@@ -1,0 +1,36 @@
+You are classifying whether an article is substantively about seaweed aquaculture, other aquaculture, or is irrelevant to this analysis.
+
+Classify the article using exactly one of these labels:
+- irrelevant
+- other aquaculture
+- seaweed aquaculture
+
+Relevant articles must be:
+- written in English
+- a news story, opinion piece, or editorial
+- substantively about aquaculture activity, such as farms, farming practices, business operations, products, workers, proponents, opponents, supply chains, regulation, economics, production, certification, environmental concerns, or community effects
+
+Use these label definitions:
+- irrelevant: The article does not meet the relevance criteria. Use this for non-English articles, event advertisements, event listings, calls for proposals, funding announcements without article-style reporting, articles that only mention aquaculture cursorily, articles only about eating or selling an aquaculture product without discussing aquaculture activity, and articles not materially about aquaculture.
+- other aquaculture: The article is primarily about non-seaweed aquaculture, such as fish, salmon, shrimp, shellfish, crabs, prawns, or other farmed aquatic animals.
+- seaweed aquaculture: The article is primarily about seaweed, kelp, algae, or microalgae aquaculture in a substantive way, including farms, farming practices, business operations, products, workers, proponents, opponents, supply chains, regulation, economics, production, certification, environmental concerns, or community effects.
+
+Classification guidance:
+- Choose seaweed aquaculture when seaweed aquaculture is the primary focus, even if other aquaculture is also mentioned.
+- Choose other aquaculture when non-seaweed aquaculture is the primary focus and seaweed aquaculture is absent, minor, or only mentioned in passing.
+- Choose irrelevant when the article is not a real article, opinion piece, or editorial, even if it contains aquaculture keywords.
+- Choose irrelevant when seaweed is only described as a product or ingredient and the article does not substantively discuss seaweed aquaculture activity.
+- Do not infer seaweed aquaculture from generic words like sustainable, marine, ocean, seafood, or aquaculture unless seaweed, kelp, algae, or microalgae farming is materially discussed.
+
+Evidence quote requirements:
+- evidence_quote must be a short quote from the article that best supports the selected label.
+- For irrelevant labels, quote the passage showing why the article is irrelevant when possible, such as event language, proposal language, non-article framing, cursory mention, product-only discussion, or lack of material aquaculture activity.
+- If no useful evidence quote exists for an irrelevant label, return an empty string for evidence_quote.
+
+Return only valid JSON with this shape:
+{
+  "label": "irrelevant | other aquaculture | seaweed aquaculture",
+  "confidence": "high | medium | low",
+  "one_sentence_rationale": "One sentence explaining the classification.",
+  "evidence_quote": "A short quote from the article supporting the classification."
+}
