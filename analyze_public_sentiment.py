@@ -74,6 +74,15 @@ class AnalysisResult:
 
 
 @dataclass(frozen=True)
+class AnalysisBatch:
+    """Prepared rows and prompt for one configured analysis."""
+
+    config: AnalysisConfig
+    prompt: str
+    work_items: tuple[AnalysisWorkItem, ...]
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     """Resolved runtime configuration for the analysis workflow."""
 
@@ -496,17 +505,15 @@ def collect_analysis_items(
 def run_parallel_openai_analysis(
         client: Any,
         model: str,
-        prompt: str,
-        work_items: list[AnalysisWorkItem],
+        analysis_batches: list[AnalysisBatch],
         max_workers: int) -> list[AnalysisResult]:
-    """Analyze prepared rows concurrently with progress reporting.
+    """Analyze prepared rows across all analyses with progress reporting.
 
     Args:
         client: OpenAI client instance.
         model: OpenAI model configured for the run.
-        prompt: Prompt text for the analysis.
-        work_items: Prepared worksheet rows to analyze.
-        max_workers: Maximum concurrent OpenAI calls.
+        analysis_batches: Prepared worksheet rows grouped by analysis.
+        max_workers: Maximum concurrent OpenAI calls across all analyses.
 
     Returns:
         Results for completed OpenAI calls.
@@ -522,41 +529,118 @@ def run_parallel_openai_analysis(
             "Install dependencies with `pip install -r requirements.txt`."
         ) from error
 
-    if not work_items:
+    all_work_items = [
+        item
+        for analysis_batch in analysis_batches
+        for item in analysis_batch.work_items
+    ]
+    if not all_work_items:
         return []
 
-    worker_count = min(max_workers, len(work_items))
+    worker_count = min(max_workers, len(all_work_items))
     results = []
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        future_to_item = {
-            executor.submit(
-                call_openai_analysis,
-                client,
-                model,
-                prompt,
-                item.text): item
-            for item in work_items
-        }
-        progress_bar = tqdm(
-            as_completed(future_to_item),
-            total=len(future_to_item),
-            desc=f"{work_items[0].analysis_name} analysis",
-            unit="article",
-        )
-        for future in progress_bar:
-            item = future_to_item[future]
-            try:
-                result = future.result()
-            except ConfigError as error:
-                raise ConfigError(
-                    f"{item.analysis_name} row {item.row_number} failed: "
-                    f"{error}") from error
-            results.append(AnalysisResult(
-                item=item,
-                label=result["label"],
-                evidence_quote=result["evidence_quote"],
-            ))
+        future_to_item = {}
+        progress_bars = {}
+        try:
+            for position, analysis_batch in enumerate(analysis_batches):
+                if not analysis_batch.work_items:
+                    continue
+                progress_bars[analysis_batch.config.name] = tqdm(
+                    total=len(analysis_batch.work_items),
+                    desc=f"{analysis_batch.config.name} analysis",
+                    unit="article",
+                    position=position,
+                )
+                for item in analysis_batch.work_items:
+                    future = executor.submit(
+                        call_openai_analysis,
+                        client,
+                        model,
+                        analysis_batch.prompt,
+                        item.text)
+                    future_to_item[future] = item
+
+            for future in as_completed(future_to_item):
+                item = future_to_item[future]
+                try:
+                    result = future.result()
+                except ConfigError as error:
+                    raise ConfigError(
+                        f"{item.analysis_name} row {item.row_number} failed: "
+                        f"{error}") from error
+                results.append(AnalysisResult(
+                    item=item,
+                    label=result["label"],
+                    evidence_quote=result["evidence_quote"],
+                ))
+                progress_bars[item.analysis_name].update(1)
+        finally:
+            for progress_bar in progress_bars.values():
+                progress_bar.close()
     return results
+
+
+def collect_analysis_batches(
+        workbook: Any,
+        runtime_config: RuntimeConfig,
+        limit_analysis_calls: int | None) -> list[AnalysisBatch]:
+    """Collect all configured worksheet rows that need OpenAI analysis.
+
+    Args:
+        workbook: openpyxl workbook to inspect and update with output headers.
+        runtime_config: Resolved runtime configuration.
+        limit_analysis_calls: Optional maximum OpenAI calls per analysis.
+
+    Returns:
+        Analysis batches with prompt text and prepared worksheet rows.
+
+    Raises:
+        ConfigError: If a configured sheet or input column is missing.
+    """
+    analysis_batches = []
+    for analysis_config in runtime_config.analyses:
+        prompt = analysis_config.prompt_file.read_text(encoding="utf-8").strip()
+        if not prompt:
+            raise ConfigError(f"Prompt file is empty: {analysis_config.prompt_file}")
+        if analysis_config.sheet_name not in workbook.sheetnames:
+            raise ConfigError(
+                f"Worksheet not found for {analysis_config.name}: "
+                f"{analysis_config.sheet_name}")
+        worksheet = workbook[analysis_config.sheet_name]
+        header_map = map_header_columns(worksheet)
+        missing_columns = [
+            column_name for column_name in (
+                analysis_config.headline_column,
+                analysis_config.body_column,
+            )
+            if column_name not in header_map
+        ]
+        if missing_columns:
+            raise ConfigError(
+                f"Missing input column(s) on {analysis_config.sheet_name}: "
+                f"{', '.join(missing_columns)}")
+
+        output_label_column = ensure_output_column(
+            worksheet, header_map, analysis_config.output_label_column)
+        output_evidence_quote_column = ensure_output_column(
+            worksheet,
+            header_map,
+            analysis_config.output_evidence_quote_column)
+        work_items = collect_analysis_items(
+            worksheet,
+            analysis_config,
+            header_map,
+            output_label_column,
+            output_evidence_quote_column,
+            limit_analysis_calls,
+        )
+        analysis_batches.append(AnalysisBatch(
+            config=analysis_config,
+            prompt=prompt,
+            work_items=tuple(work_items),
+        ))
+    return analysis_batches
 
 
 def process_workbook(
@@ -588,66 +672,28 @@ def process_workbook(
         raise ConfigError("--max-workers must be at least 1")
     client = create_openai_client(runtime_config.openai_key_file)
     workbook = load_workbook(runtime_config.input_file)
-    analyzed_items = []
-
-    for analysis_config in runtime_config.analyses:
-        prompt = analysis_config.prompt_file.read_text(encoding="utf-8").strip()
-        if not prompt:
-            raise ConfigError(f"Prompt file is empty: {analysis_config.prompt_file}")
-        if analysis_config.sheet_name not in workbook.sheetnames:
-            raise ConfigError(
-                f"Worksheet not found for {analysis_config.name}: "
-                f"{analysis_config.sheet_name}")
-        worksheet = workbook[analysis_config.sheet_name]
-        header_map = map_header_columns(worksheet)
-        missing_columns = [
-            column_name for column_name in (
-                analysis_config.headline_column,
-                analysis_config.body_column,
-            )
-            if column_name not in header_map
-        ]
-        if missing_columns:
-            raise ConfigError(
-                f"Missing input column(s) on {analysis_config.sheet_name}: "
-                f"{', '.join(missing_columns)}")
-
-        output_label_column = ensure_output_column(
-            worksheet, header_map, analysis_config.output_label_column)
-        output_evidence_quote_column = ensure_output_column(
-            worksheet,
-            header_map,
-            analysis_config.output_evidence_quote_column)
-
-        work_items = collect_analysis_items(
-            worksheet,
-            analysis_config,
-            header_map,
-            output_label_column,
-            output_evidence_quote_column,
-            limit_analysis_calls,
-        )
-        analysis_results = run_parallel_openai_analysis(
-            client,
-            runtime_config.openai_model,
-            prompt,
-            work_items,
-            max_workers,
-        )
-        for analysis_result in analysis_results:
-            item = analysis_result.item
-            worksheet.cell(
-                row=item.row_number,
-                column=item.output_label_column).value = analysis_result.label
-            worksheet.cell(
-                row=item.row_number,
-                column=item.output_evidence_quote_column).value = (
-                    analysis_result.evidence_quote)
-        analyzed_items.extend(work_items)
+    analysis_batches = collect_analysis_batches(
+        workbook, runtime_config, limit_analysis_calls)
+    analysis_results = run_parallel_openai_analysis(
+        client,
+        runtime_config.openai_model,
+        analysis_batches,
+        max_workers,
+    )
+    for analysis_result in analysis_results:
+        item = analysis_result.item
+        worksheet = workbook[item.worksheet_name]
+        worksheet.cell(
+            row=item.row_number,
+            column=item.output_label_column).value = analysis_result.label
+        worksheet.cell(
+            row=item.row_number,
+            column=item.output_evidence_quote_column).value = (
+                analysis_result.evidence_quote)
 
     runtime_config.output_file.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(runtime_config.output_file)
-    return analyzed_items
+    return [analysis_result.item for analysis_result in analysis_results]
 
 
 def main() -> None:
