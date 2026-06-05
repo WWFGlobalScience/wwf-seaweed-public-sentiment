@@ -21,6 +21,7 @@ analyses:
     prompt_file: "../prompts/headline_category_classification_prompt.txt"
     input_columns:
       headline: "headline"
+      body: "body"
     output_columns:
       label: "{model}_category"
       evidence_quote: "{model}_category_quote"
