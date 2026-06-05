@@ -1,2 +1,5 @@
+__pycache__/
+*.py[cod]
+.env
 secrets.txt
-huggingface_tokens.txt
+openai_key.txt
