@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 import json
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +19,7 @@ MODEL_TOKEN = "{model}"
 DEFAULT_MAX_WORKERS = 4
 MAX_OPENAI_ATTEMPTS = 5
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
+EXCEL_ILLEGAL_CHARACTERS_RE = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
 ANALYSIS_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -261,6 +263,18 @@ def resolve_output_column_name(column_name: str, model: str) -> str:
         Output column name with supported placeholders resolved.
     """
     return column_name.replace(MODEL_TOKEN, model_column_prefix(model))
+
+
+def sanitize_excel_cell_text(text: str) -> str:
+    """Remove characters Excel cells cannot store.
+
+    Args:
+        text: Model output text that will be written to an Excel cell.
+
+    Returns:
+        Text with Excel-illegal control characters removed.
+    """
+    return EXCEL_ILLEGAL_CHARACTERS_RE.sub("", text)
 
 
 def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
@@ -730,11 +744,12 @@ def process_workbook(
         worksheet = workbook[item.worksheet_name]
         worksheet.cell(
             row=item.row_number,
-            column=item.output_label_column).value = analysis_result.label
+            column=item.output_label_column).value = sanitize_excel_cell_text(
+                analysis_result.label)
         worksheet.cell(
             row=item.row_number,
             column=item.output_evidence_quote_column).value = (
-                analysis_result.evidence_quote)
+                sanitize_excel_cell_text(analysis_result.evidence_quote))
 
     runtime_config.output_file.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(runtime_config.output_file)
