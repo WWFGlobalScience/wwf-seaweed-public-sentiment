@@ -10,4 +10,4 @@ The command-line interface reads a YAML configuration file, validates the config
 python analyze_public_sentiment.py configs\analysis_2026_06_05.yaml
 ```
 
-Use `--limit-analysis-calls N` to limit OpenAI calls per configured analysis during debugging.
+Use `--limit-analysis-calls N` to limit OpenAI calls per configured analysis during debugging. Use `--max-workers N` to control concurrent OpenAI calls; the default is 4.
