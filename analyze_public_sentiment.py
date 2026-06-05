@@ -14,6 +14,7 @@ from typing import Any
 
 TIMESTAMP_TOKEN = "{TIMESTAMP}"
 TIMESTAMP_FORMAT = "%Y-%m-%d-%H-%M-%S"
+MODEL_TOKEN = "{model}"
 DEFAULT_MAX_WORKERS = 4
 MAX_OPENAI_ATTEMPTS = 5
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
@@ -47,7 +48,7 @@ class AnalysisConfig:
     sheet_name: str
     prompt_file: Path
     headline_column: str
-    body_column: str
+    body_column: str | None
     output_label_column: str
     output_evidence_quote_column: str
 
@@ -230,6 +231,38 @@ def validate_required_file(path: Path, label: str) -> None:
         raise ConfigError(f"{label} not found: {path}")
 
 
+def model_column_prefix(model: str) -> str:
+    """Convert a model name into a spreadsheet column-name prefix.
+
+    Args:
+        model: OpenAI model name from the configuration.
+
+    Returns:
+        Lowercase model name with non-alphanumeric characters converted to
+        underscores.
+    """
+    sanitized_characters = [
+        character.lower() if character.isalnum() else "_"
+        for character in model
+    ]
+    return "_".join(
+        segment for segment in "".join(sanitized_characters).split("_")
+        if segment)
+
+
+def resolve_output_column_name(column_name: str, model: str) -> str:
+    """Resolve configured output column placeholders.
+
+    Args:
+        column_name: Configured output column name.
+        model: OpenAI model name from the configuration.
+
+    Returns:
+        Output column name with supported placeholders resolved.
+    """
+    return column_name.replace(MODEL_TOKEN, model_column_prefix(model))
+
+
 def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
     """Validate configured paths and return the resolved runtime configuration.
 
@@ -276,7 +309,10 @@ def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
         output_columns = require_mapping(
             analysis_config, "output_columns", context)
         require_string(input_columns, "headline", f"{context}.input_columns")
-        require_string(input_columns, "body", f"{context}.input_columns")
+        body_column = None
+        if "body" in input_columns and input_columns["body"] is not None:
+            body_column = require_string(
+                input_columns, "body", f"{context}.input_columns")
         require_string(output_columns, "label", f"{context}.output_columns")
         require_string(
             output_columns, "evidence_quote", f"{context}.output_columns")
@@ -287,14 +323,17 @@ def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
             prompt_file=prompt_file,
             headline_column=require_string(
                 input_columns, "headline", f"{context}.input_columns"),
-            body_column=require_string(
-                input_columns, "body", f"{context}.input_columns"),
-            output_label_column=require_string(
-                output_columns, "label", f"{context}.output_columns"),
-            output_evidence_quote_column=require_string(
-                output_columns,
-                "evidence_quote",
-                f"{context}.output_columns"),
+            body_column=body_column,
+            output_label_column=resolve_output_column_name(
+                require_string(
+                    output_columns, "label", f"{context}.output_columns"),
+                openai_model),
+            output_evidence_quote_column=resolve_output_column_name(
+                require_string(
+                    output_columns,
+                    "evidence_quote",
+                    f"{context}.output_columns"),
+                openai_model),
         ))
 
     return RuntimeConfig(
@@ -470,7 +509,10 @@ def collect_analysis_items(
         Prepared analysis work items.
     """
     headline_column = header_map[analysis_config.headline_column]
-    body_column = header_map[analysis_config.body_column]
+    body_column = (
+        header_map[analysis_config.body_column]
+        if analysis_config.body_column
+        else None)
     work_items = []
     for row_number in range(2, worksheet.max_row + 1):
         if (
@@ -484,7 +526,10 @@ def collect_analysis_items(
         if existing_label or existing_quote:
             continue
         headline = worksheet.cell(row=row_number, column=headline_column).value
-        body = worksheet.cell(row=row_number, column=body_column).value
+        body = (
+            worksheet.cell(row=row_number, column=body_column).value
+            if body_column
+            else None)
         text_parts = [
             str(value).strip()
             for value in (headline, body)
@@ -614,7 +659,7 @@ def collect_analysis_batches(
                 analysis_config.headline_column,
                 analysis_config.body_column,
             )
-            if column_name not in header_map
+            if column_name and column_name not in header_map
         ]
         if missing_columns:
             raise ConfigError(
