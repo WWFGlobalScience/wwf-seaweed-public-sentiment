@@ -1,30 +1,28 @@
-You are classifying the aquaculture category of a news article using only the article headline.
+You are classifying the aquaculture category of a news article using the article headline and body.
 
-Classify the headline using exactly one of these label values:
+Classify the article using exactly one of these label values:
 - seaweed aquaculture
 - other aquaculture
-- ""
 
 Definitions:
-- seaweed aquaculture: The headline is primarily about seaweed, kelp, algae, or microalgae aquaculture.
-- other aquaculture: The headline is primarily about non-seaweed aquaculture, such as fish, salmon, shrimp, shellfish, crabs, prawns, or other farmed aquatic animals.
-- "": Use an empty string when the headline alone does not provide enough information to determine the category.
+- seaweed aquaculture: The article is primarily about seaweed, kelp, algae, or microalgae aquaculture.
+- other aquaculture: The article is primarily about non-seaweed aquaculture, such as fish, salmon, shrimp, shellfish, crabs, prawns, or other farmed aquatic animals.
 
 Classification guidance:
-- Use only the headline text. Do not infer from missing article body context.
-- Choose seaweed aquaculture when the headline clearly identifies seaweed, kelp, algae, or microalgae farming or aquaculture.
-- Choose other aquaculture when the headline clearly identifies non-seaweed aquaculture.
-- Return an empty string for vague aquaculture headlines, general seafood headlines, ambiguous product headlines, or headlines where the aquaculture type cannot be determined confidently.
-- Do not guess when the headline is unclear.
+- Use the supplied headline and article body text.
+- Always choose one of the two allowed labels. Do not return an empty label.
+- Choose seaweed aquaculture when the article is primarily about seaweed, kelp, algae, or microalgae aquaculture.
+- Choose other aquaculture when the article is primarily about non-seaweed aquaculture.
+- For generic, vague, or ambiguous aquaculture articles that do not mention seaweed, kelp, algae, or microalgae substantively, choose other aquaculture.
 
 Evidence quote requirements:
-- evidence_quote must be a short quote from the headline that supports the selected label.
-- For empty-string labels, return an empty string for evidence_quote unless a short quote helps explain the ambiguity.
+- evidence_quote must be a short quote from the headline or body that supports the selected label.
+- For generic or ambiguous articles classified as other aquaculture by default, quote the aquaculture-related phrase from the headline or body.
 
 Return only valid JSON with this shape:
 {
-  "label": "seaweed aquaculture | other aquaculture | \"\"",
+  "label": "seaweed aquaculture | other aquaculture",
   "confidence": "high | medium | low",
   "one_sentence_rationale": "One sentence explaining the classification.",
-  "evidence_quote": "A short quote from the headline supporting the classification."
+  "evidence_quote": "A short quote from the headline or body supporting the classification."
 }
