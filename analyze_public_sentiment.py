@@ -311,31 +311,6 @@ def require_string(parent: dict[str, Any], key: str, context: str) -> str:
     return value
 
 
-def read_optional_positive_float(
-        parent: dict[str, Any],
-        key: str,
-        default: float,
-        context: str) -> float:
-    """Read an optional positive numeric configuration value.
-
-    Args:
-        parent: Mapping that may contain the requested key.
-        key: Key to read.
-        default: Value to use when the key is absent.
-        context: Human-readable configuration context for error messages.
-
-    Returns:
-        Configured positive number, or the default value.
-
-    Raises:
-        ConfigError: If the configured value is not a positive number.
-    """
-    value = parent.get(key, default)
-    if not isinstance(value, (int, float)) or value <= 0:
-        raise ConfigError(f"Missing or invalid positive number: {context}.{key}")
-    return float(value)
-
-
 def validate_required_file(path: Path, label: str) -> None:
     """Validate that a required configured file exists.
 
@@ -417,18 +392,19 @@ def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
         openai_cache_file = resolve_config_path(cache_file_value, config_dir)
     else:
         raise ConfigError("Missing or invalid string: config.openai.cache_file")
-    request_timeout_seconds = read_optional_positive_float(
-        openai_config,
-        "request_timeout_seconds",
-        DEFAULT_OPENAI_REQUEST_TIMEOUT_SECONDS,
-        "config.openai",
-    )
-    stall_log_seconds = read_optional_positive_float(
-        openai_config,
-        "stall_log_seconds",
-        DEFAULT_STALL_LOG_SECONDS,
-        "config.openai",
-    )
+    request_timeout_seconds = openai_config.get(
+        "request_timeout_seconds", DEFAULT_OPENAI_REQUEST_TIMEOUT_SECONDS)
+    if (
+            not isinstance(request_timeout_seconds, (int, float)) or
+            request_timeout_seconds <= 0):
+        raise ConfigError(
+            "Missing or invalid positive number: "
+            "config.openai.request_timeout_seconds")
+    stall_log_seconds = openai_config.get(
+        "stall_log_seconds", DEFAULT_STALL_LOG_SECONDS)
+    if not isinstance(stall_log_seconds, (int, float)) or stall_log_seconds <= 0:
+        raise ConfigError(
+            "Missing or invalid positive number: config.openai.stall_log_seconds")
 
     validate_required_file(input_file, "Input Excel file")
     validate_required_file(key_file, "OpenAI key file")
@@ -480,8 +456,8 @@ def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
         openai_key_file=key_file,
         openai_cache_file=openai_cache_file,
         openai_model=openai_model,
-        openai_request_timeout_seconds=request_timeout_seconds,
-        stall_log_seconds=stall_log_seconds,
+        openai_request_timeout_seconds=float(request_timeout_seconds),
+        stall_log_seconds=float(stall_log_seconds),
         analyses=tuple(analyses),
     )
 
