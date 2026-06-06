@@ -125,21 +125,35 @@ class OpenAIAnalysisCache:
         Raises:
             ConfigError: If the cache file exists but is invalid.
         """
-        if not cache_file.exists():
+        cache_candidates = [cache_file]
+        temporary_cache_file = cache_file.with_suffix(f"{cache_file.suffix}.tmp")
+        if temporary_cache_file.exists():
+            cache_candidates.append(temporary_cache_file)
+        loaded_responses = {}
+        for candidate_cache_file in cache_candidates:
+            if not candidate_cache_file.exists():
+                continue
+            try:
+                cache_data = json.loads(
+                    candidate_cache_file.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as error:
+                raise ConfigError(
+                    f"OpenAI cache file is invalid JSON: {candidate_cache_file}"
+                ) from error
+            if not isinstance(cache_data, dict):
+                raise ConfigError(
+                    "OpenAI cache file must contain a mapping: "
+                    f"{candidate_cache_file}")
+            responses = cache_data.get("responses")
+            if not isinstance(responses, dict):
+                raise ConfigError(
+                    "OpenAI cache file is missing a responses mapping: "
+                    f"{candidate_cache_file}")
+            if len(responses) > len(loaded_responses):
+                loaded_responses = responses
+        if not loaded_responses:
             return cls(cache_file=cache_file, responses={})
-        try:
-            cache_data = json.loads(cache_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as error:
-            raise ConfigError(
-                f"OpenAI cache file is invalid JSON: {cache_file}") from error
-        if not isinstance(cache_data, dict):
-            raise ConfigError(
-                f"OpenAI cache file must contain a mapping: {cache_file}")
-        responses = cache_data.get("responses")
-        if not isinstance(responses, dict):
-            raise ConfigError(
-                f"OpenAI cache file is missing a responses mapping: {cache_file}")
-        return cls(cache_file=cache_file, responses=responses)
+        return cls(cache_file=cache_file, responses=loaded_responses)
 
     def cache_key(self, model: str, prompt: str, article_text: str) -> str:
         """Build a cache key for an OpenAI analysis request.
@@ -170,9 +184,7 @@ class OpenAIAnalysisCache:
         if not self.dirty:
             return
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-        temporary_cache_file = self.cache_file.with_suffix(
-            f"{self.cache_file.suffix}.tmp")
-        temporary_cache_file.write_text(
+        self.cache_file.write_text(
             json.dumps(
                 {
                     "version": 1,
@@ -184,7 +196,10 @@ class OpenAIAnalysisCache:
             ),
             encoding="utf-8",
         )
-        temporary_cache_file.replace(self.cache_file)
+        temporary_cache_file = self.cache_file.with_suffix(
+            f"{self.cache_file.suffix}.tmp")
+        if temporary_cache_file.exists():
+            temporary_cache_file.unlink()
         self.dirty = False
 
 
@@ -602,6 +617,10 @@ def call_openai_analysis(
                     f"{MAX_OPENAI_ATTEMPTS} failed; retrying in "
                     f"{backoff_seconds:.1f}s ({error})")
             time.sleep(backoff_seconds)
+            if retry_logger is not None:
+                retry_logger(
+                    f"{request_label}: starting OpenAI attempt "
+                    f"{attempt_index + 2}/{MAX_OPENAI_ATTEMPTS}")
             continue
 
         final_attempt = attempt_index == MAX_OPENAI_ATTEMPTS - 1
@@ -620,6 +639,10 @@ def call_openai_analysis(
                     f"{MAX_OPENAI_ATTEMPTS} returned invalid JSON; retrying "
                     f"in {backoff_seconds:.1f}s")
             time.sleep(backoff_seconds)
+            if retry_logger is not None:
+                retry_logger(
+                    f"{request_label}: starting OpenAI attempt "
+                    f"{attempt_index + 2}/{MAX_OPENAI_ATTEMPTS}")
             continue
 
         if not isinstance(result, dict):
@@ -634,6 +657,10 @@ def call_openai_analysis(
                     f"{MAX_OPENAI_ATTEMPTS} returned non-object JSON; "
                     f"retrying in {backoff_seconds:.1f}s")
             time.sleep(backoff_seconds)
+            if retry_logger is not None:
+                retry_logger(
+                    f"{request_label}: starting OpenAI attempt "
+                    f"{attempt_index + 2}/{MAX_OPENAI_ATTEMPTS}")
             continue
 
         required_fields = {
@@ -656,6 +683,10 @@ def call_openai_analysis(
                     f"{MAX_OPENAI_ATTEMPTS} returned incomplete JSON; "
                     f"retrying in {backoff_seconds:.1f}s")
             time.sleep(backoff_seconds)
+            if retry_logger is not None:
+                retry_logger(
+                    f"{request_label}: starting OpenAI attempt "
+                    f"{attempt_index + 2}/{MAX_OPENAI_ATTEMPTS}")
             continue
         return result
 
