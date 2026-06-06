@@ -6,7 +6,7 @@ The article has already been assigned to one of these aquaculture categories out
 
 Use the supplied aquaculture category only as context. Do not classify the aquaculture category.
 
-Classify the article's overall representation of aquaculture. Consider the article's economic, environmental, social, policy, industry, scientific, and community framing.
+Classify the article's overall representation of aquaculture itself. Consider the article's economic, environmental, social, policy, industry, scientific, food-safety, and community framing, but classify the sentiment toward aquaculture activity, aquaculture products, aquaculture companies, aquaculture projects, or the aquaculture sector. Do not classify sentiment toward unrelated government process, enforcement action, broader economic conditions, non-aquaculture threats, or the author's writing tone.
 
 Allowed labels:
 - positive
@@ -14,15 +14,23 @@ Allowed labels:
 - neutral
 
 Definitions:
-- positive: The article presents aquaculture in a mostly favorable way, including as economically beneficial, sustainable, innovative, expanding, job-supporting, investment-worthy, beneficial to communities, or otherwise promising.
-- negative: The article presents aquaculture in a mostly unfavorable way, including as environmentally harmful, economically risky, socially controversial, opposed by stakeholders, poorly regulated, damaging to communities, or otherwise concerning.
-- neutral: The article discusses aquaculture in a mainly descriptive, factual, or balanced way without clear positive or negative framing.
+- positive: The article presents aquaculture in a mostly favorable way, such as successful, safe, compliant, beneficial, supported, environmentally or socially responsible, economically strong, or clearly valuable to producers, consumers, communities, or the sector.
+- negative: The article presents aquaculture in a mostly unfavorable way, such as harmful, illegal, polluting, unsafe, diseased, poorly controlled, damaging to communities or ecosystems, strongly opposed, economically failing, or otherwise a direct source of concern.
+- neutral: The article discusses aquaculture in a mainly descriptive, factual, procedural, administrative, or balanced way without clear positive or negative article-level framing toward aquaculture itself.
 
 Classification guidance:
-- Favorable government, institutional, industry, scientific, environmental, economic, or community claims can support a positive label when the article presents them favorably.
-- Critical government, institutional, industry, scientific, environmental, economic, or community claims can support a negative label when the article presents them unfavorably.
+- Use neutral as the default when the article mainly reports facts, numbers, logistics, current conditions, routine announcements, or procedural updates.
+- Choose neutral for routine government, institutional, industry, or company announcements about funding, studies, planning, expansion, investment, capacity, projected jobs, projected income, formalization, licensing, registration, permitting, technical assistance, compliance processes, or administrative modernization unless the article clearly goes beyond routine promotion or process reporting.
+- Do not choose positive merely because officials, companies, banks, or program administrators say aquaculture could create jobs, increase income, improve competitiveness, boost exports, support food supply, attract investment, or expand in the future.
+- Choose positive when the article clearly validates or favors aquaculture itself, including concrete findings that products are safe, facilities are compliant, operations met standards, aquaculture delivered successful outcomes, or aquaculture is broadly framed as beneficial beyond routine official or company promotion.
+- Do not choose negative merely because the article mentions lawsuits, delays, permitting deadlocks, denied permits, administrative obstacles, business losses, market difficulties, general farmer hardship, illegal imports, smuggling, or background controversy.
+- Choose negative when the unfavorable framing is about aquaculture itself, including aquaculture activity described as illegal, environmentally harmful, polluting, unsafe, diseased, damaging, strongly opposed, poorly regulated, or harmful to affected people, communities, wild species, or ecosystems.
+- When an article discusses regulation, litigation, enforcement, conservation, or cleanup, classify sentiment based on how the aquaculture activity is portrayed, not whether the government or court action is portrayed favorably or unfavorably.
+- When aquaculture is portrayed as being harmed by outside actors or conditions, such as smuggling, illegal imports, middlemen, weak markets, or administrative barriers, do not treat those outside problems as negative sentiment toward aquaculture.
+- Do not let one favorable or critical quote override the classification when the overall article is mainly neutral or balanced.
+- Favorable government, institutional, industry, scientific, environmental, economic, or community claims can support a positive label only when they are central to the article's overall framing of aquaculture itself.
+- Critical government, institutional, industry, scientific, environmental, economic, or community claims can support a negative label only when they are central to the article's overall framing of aquaculture itself.
 - Do not require sentiment to come from local residents or public commenters. The task is overall article sentiment, not public/community sentiment.
-- Choose neutral for articles that mainly report facts, numbers, logistics, or current conditions without clear favorable or unfavorable framing.
 - Choose neutral when positive and negative framing are both present without a clear dominant direction.
 
 Evidence quote requirements:
