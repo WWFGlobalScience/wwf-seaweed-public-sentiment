@@ -2,7 +2,8 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import as_completed
+from concurrent.futures import FIRST_COMPLETED
+from concurrent.futures import wait
 import hashlib
 import json
 import random
@@ -12,12 +13,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from typing import Callable
 
 
 TIMESTAMP_TOKEN = "{TIMESTAMP}"
 TIMESTAMP_FORMAT = "%Y-%m-%d-%H-%M-%S"
 MODEL_TOKEN = "{model}"
 DEFAULT_MAX_WORKERS = 4
+DEFAULT_OPENAI_REQUEST_TIMEOUT_SECONDS = 120.0
+DEFAULT_STALL_LOG_SECONDS = 30.0
 MAX_OPENAI_ATTEMPTS = 5
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 EXCEL_ILLEGAL_CHARACTERS_RE = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
@@ -95,6 +99,8 @@ class RuntimeConfig:
     openai_key_file: Path
     openai_cache_file: Path
     openai_model: str
+    openai_request_timeout_seconds: float
+    stall_log_seconds: float
     analyses: tuple[AnalysisConfig, ...]
 
 
@@ -386,6 +392,19 @@ def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
         openai_cache_file = resolve_config_path(cache_file_value, config_dir)
     else:
         raise ConfigError("Missing or invalid string: config.openai.cache_file")
+    request_timeout_seconds = openai_config.get(
+        "request_timeout_seconds", DEFAULT_OPENAI_REQUEST_TIMEOUT_SECONDS)
+    if (
+            not isinstance(request_timeout_seconds, (int, float)) or
+            request_timeout_seconds <= 0):
+        raise ConfigError(
+            "Missing or invalid positive number: "
+            "config.openai.request_timeout_seconds")
+    stall_log_seconds = openai_config.get(
+        "stall_log_seconds", DEFAULT_STALL_LOG_SECONDS)
+    if not isinstance(stall_log_seconds, (int, float)) or stall_log_seconds <= 0:
+        raise ConfigError(
+            "Missing or invalid positive number: config.openai.stall_log_seconds")
 
     validate_required_file(input_file, "Input Excel file")
     validate_required_file(key_file, "OpenAI key file")
@@ -437,6 +456,8 @@ def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
         openai_key_file=key_file,
         openai_cache_file=openai_cache_file,
         openai_model=openai_model,
+        openai_request_timeout_seconds=float(request_timeout_seconds),
+        stall_log_seconds=float(stall_log_seconds),
         analyses=tuple(analyses),
     )
 
@@ -477,11 +498,13 @@ def ensure_output_column(
     return column_index
 
 
-def create_openai_client(api_key_file: Path) -> Any:
+def create_openai_client(
+        api_key_file: Path, request_timeout_seconds: float) -> Any:
     """Create an OpenAI client from a configured API key file.
 
     Args:
         api_key_file: Path to a text file containing an OpenAI API key.
+        request_timeout_seconds: Maximum seconds for each OpenAI request attempt.
 
     Returns:
         OpenAI client instance.
@@ -500,7 +523,11 @@ def create_openai_client(api_key_file: Path) -> Any:
     api_key = api_key_file.read_text(encoding="utf-8").strip()
     if not api_key:
         raise ConfigError(f"OpenAI key file is empty: {api_key_file}")
-    return OpenAI(api_key=api_key)
+    return OpenAI(
+        api_key=api_key,
+        timeout=request_timeout_seconds,
+        max_retries=0,
+    )
 
 
 def is_retryable_openai_error(error: Exception) -> bool:
@@ -519,7 +546,12 @@ def is_retryable_openai_error(error: Exception) -> bool:
 
 
 def call_openai_analysis(
-        client: Any, model: str, prompt: str, article_text: str) -> dict[str, str]:
+        client: Any,
+        model: str,
+        prompt: str,
+        article_text: str,
+        request_label: str,
+        retry_logger: Callable[[str], None] | None = None) -> dict[str, str]:
     """Classify one article with OpenAI and parse the JSON result.
 
     Args:
@@ -527,6 +559,8 @@ def call_openai_analysis(
         model: OpenAI model configured for the run.
         prompt: Analysis prompt text.
         article_text: Combined headline and body text to analyze.
+        request_label: Human-readable row label for progress messages.
+        retry_logger: Optional logger for retry/backoff messages.
 
     Returns:
         Parsed JSON response from the model.
@@ -563,6 +597,11 @@ def call_openai_analysis(
             if final_attempt or not is_retryable_openai_error(error):
                 raise ConfigError(f"OpenAI request failed: {error}") from error
             backoff_seconds = min(60, 2 ** attempt_index) + random.random()
+            if retry_logger is not None:
+                retry_logger(
+                    f"{request_label}: OpenAI attempt {attempt_index + 1}/"
+                    f"{MAX_OPENAI_ATTEMPTS} failed; retrying in "
+                    f"{backoff_seconds:.1f}s ({error})")
             time.sleep(backoff_seconds)
 
     try:
@@ -648,7 +687,8 @@ def run_parallel_openai_analysis(
         model: str,
         analysis_batches: list[AnalysisBatch],
         max_workers: int,
-        cache: OpenAIAnalysisCache) -> list[AnalysisResult]:
+        cache: OpenAIAnalysisCache,
+        stall_log_seconds: float) -> list[AnalysisResult]:
     """Analyze prepared rows across all analyses with progress reporting.
 
     Args:
@@ -657,6 +697,7 @@ def run_parallel_openai_analysis(
         analysis_batches: Prepared worksheet rows grouped by analysis.
         max_workers: Maximum concurrent OpenAI calls across all analyses.
         cache: OpenAI response cache.
+        stall_log_seconds: Seconds without a completed request before logging.
 
     Returns:
         Results for completed OpenAI calls.
@@ -685,6 +726,8 @@ def run_parallel_openai_analysis(
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         future_to_items = {}
         future_to_cache_key = {}
+        future_to_started_at = {}
+        future_to_label = {}
         pending_futures_by_cache_key = {}
         progress_bars = {}
         try:
@@ -697,49 +740,92 @@ def run_parallel_openai_analysis(
                     unit="article",
                     position=position,
                 )
-                for item in analysis_batch.work_items:
-                    cache_key = cache.cache_key(model, analysis_batch.prompt, item.text)
-                    cached_result = cache.responses.get(cache_key)
-                    if isinstance(cached_result, dict):
-                        results.append(AnalysisResult(
-                            item=item,
-                            label=cached_result["label"],
-                            evidence_quote=cached_result["evidence_quote"],
-                        ))
-                        progress_bars[item.analysis_name].update(1)
-                        continue
-                    if cache_key in pending_futures_by_cache_key:
-                        future_to_items[
-                            pending_futures_by_cache_key[cache_key]].append(item)
-                        continue
-                    future = executor.submit(
-                        call_openai_analysis,
-                        client,
-                        model,
-                        analysis_batch.prompt,
-                        item.text)
-                    pending_futures_by_cache_key[cache_key] = future
-                    future_to_items[future] = [item]
-                    future_to_cache_key[future] = cache_key
 
-            for future in as_completed(future_to_items):
-                items = future_to_items[future]
-                try:
-                    result = future.result()
-                except ConfigError as error:
-                    item = items[0]
-                    raise ConfigError(
-                        f"{item.analysis_name} row {item.row_number} failed: "
-                        f"{error}") from error
-                cache.responses[future_to_cache_key[future]] = dict(result)
-                cache.dirty = True
-                for item in items:
+            scheduled_work_items = []
+            largest_batch_size = max(
+                len(analysis_batch.work_items)
+                for analysis_batch in analysis_batches
+            )
+            for item_index in range(largest_batch_size):
+                for analysis_batch in analysis_batches:
+                    if item_index < len(analysis_batch.work_items):
+                        scheduled_work_items.append(
+                            (
+                                analysis_batch,
+                                analysis_batch.work_items[item_index],
+                            ))
+
+            for analysis_batch, item in scheduled_work_items:
+                cache_key = cache.cache_key(model, analysis_batch.prompt, item.text)
+                cached_result = cache.responses.get(cache_key)
+                if isinstance(cached_result, dict):
                     results.append(AnalysisResult(
                         item=item,
-                        label=result["label"],
-                        evidence_quote=result["evidence_quote"],
+                        label=cached_result["label"],
+                        evidence_quote=cached_result["evidence_quote"],
                     ))
                     progress_bars[item.analysis_name].update(1)
+                    continue
+                if cache_key in pending_futures_by_cache_key:
+                    pending_future = pending_futures_by_cache_key[cache_key]
+                    future_to_items[pending_future].append(item)
+                    continue
+                request_label = f"{item.analysis_name} row {item.row_number}"
+                future = executor.submit(
+                    call_openai_analysis,
+                    client,
+                    model,
+                    analysis_batch.prompt,
+                    item.text,
+                    request_label,
+                    tqdm.write)
+                pending_futures_by_cache_key[cache_key] = future
+                future_to_items[future] = [item]
+                future_to_cache_key[future] = cache_key
+                future_to_started_at[future] = time.monotonic()
+                future_to_label[future] = request_label
+
+            pending_futures = set(future_to_items)
+            while pending_futures:
+                done_futures, pending_futures = wait(
+                    pending_futures,
+                    timeout=stall_log_seconds,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done_futures:
+                    oldest_future = min(
+                        pending_futures,
+                        key=lambda pending_future: future_to_started_at[
+                            pending_future],
+                    )
+                    oldest_elapsed_seconds = (
+                        time.monotonic() - future_to_started_at[oldest_future])
+                    tqdm.write(
+                        "No OpenAI requests completed in "
+                        f"{stall_log_seconds:g}s; "
+                        f"{len(pending_futures)} request(s) still in flight. "
+                        "Oldest pending request: "
+                        f"{future_to_label[oldest_future]} "
+                        f"({oldest_elapsed_seconds:g}s).")
+                    continue
+                for future in done_futures:
+                    items = future_to_items[future]
+                    try:
+                        result = future.result()
+                    except ConfigError as error:
+                        item = items[0]
+                        raise ConfigError(
+                            f"{item.analysis_name} row {item.row_number} "
+                            f"failed: {error}") from error
+                    cache.responses[future_to_cache_key[future]] = dict(result)
+                    cache.dirty = True
+                    for item in items:
+                        results.append(AnalysisResult(
+                            item=item,
+                            label=result["label"],
+                            evidence_quote=result["evidence_quote"],
+                        ))
+                        progress_bars[item.analysis_name].update(1)
         finally:
             for progress_bar in progress_bars.values():
                 progress_bar.close()
@@ -835,7 +921,10 @@ def process_workbook(
 
     if max_workers < 1:
         raise ConfigError("--max-workers must be at least 1")
-    client = create_openai_client(runtime_config.openai_key_file)
+    client = create_openai_client(
+        runtime_config.openai_key_file,
+        runtime_config.openai_request_timeout_seconds,
+    )
     cache = OpenAIAnalysisCache.load(runtime_config.openai_cache_file)
     workbook = load_workbook(runtime_config.input_file)
     analysis_batches = collect_analysis_batches(
@@ -846,6 +935,7 @@ def process_workbook(
         analysis_batches,
         max_workers,
         cache,
+        runtime_config.stall_log_seconds,
     )
     cache.save()
     for analysis_result in analysis_results:
@@ -883,6 +973,10 @@ def main() -> None:
     print(f"- output_file: {runtime_config.output_file}")
     print(f"- openai_key_file: {runtime_config.openai_key_file}")
     print(f"- openai_cache_file: {runtime_config.openai_cache_file}")
+    print(
+        "- openai_request_timeout_seconds: "
+        f"{runtime_config.openai_request_timeout_seconds:g}")
+    print(f"- stall_log_seconds: {runtime_config.stall_log_seconds:g}")
     for analysis_config in runtime_config.analyses:
         print(f"- {analysis_config.name}_prompt_file: {analysis_config.prompt_file}")
     print(f"Analyzed {len(work_items)} article text item(s).")
