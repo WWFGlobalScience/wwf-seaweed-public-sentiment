@@ -10,6 +10,7 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -110,6 +111,7 @@ class OpenAIAnalysisCache:
 
     cache_file: Path
     responses: dict[str, dict[str, str]]
+    unsaved_responses: dict[str, dict[str, str]] = field(default_factory=dict)
     dirty: bool = False
 
     @classmethod
@@ -152,7 +154,28 @@ class OpenAIAnalysisCache:
             if len(responses) > len(loaded_responses):
                 loaded_responses = responses
         if not loaded_responses:
-            return cls(cache_file=cache_file, responses={})
+            loaded_responses = {}
+        journal_file = cache_file.with_suffix(f"{cache_file.suffix}.jsonl")
+        if journal_file.exists():
+            for line_number, line in enumerate(
+                    journal_file.read_text(encoding="utf-8").splitlines(),
+                    start=1):
+                if not line.strip():
+                    continue
+                try:
+                    journal_entry = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise ConfigError(
+                        f"OpenAI cache journal line {line_number} is invalid "
+                        f"JSON: {journal_file}") from error
+                cache_key = journal_entry.get("cache_key")
+                response = journal_entry.get("response")
+                if isinstance(cache_key, str) and isinstance(response, dict):
+                    loaded_responses[cache_key] = response
+                else:
+                    raise ConfigError(
+                        f"OpenAI cache journal line {line_number} is invalid: "
+                        f"{journal_file}")
         return cls(cache_file=cache_file, responses=loaded_responses)
 
     def cache_key(self, model: str, prompt: str, article_text: str) -> str:
@@ -184,22 +207,21 @@ class OpenAIAnalysisCache:
         if not self.dirty:
             return
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-        self.cache_file.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "responses": self.responses,
-                },
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-        temporary_cache_file = self.cache_file.with_suffix(
-            f"{self.cache_file.suffix}.tmp")
-        if temporary_cache_file.exists():
-            temporary_cache_file.unlink()
+        journal_file = self.cache_file.with_suffix(f"{self.cache_file.suffix}.jsonl")
+        with journal_file.open("a", encoding="utf-8") as cache_journal:
+            for cache_key, response in self.unsaved_responses.items():
+                cache_journal.write(json.dumps(
+                    {
+                        "cache_key": cache_key,
+                        "response": response,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ))
+                cache_journal.write("\n")
+            cache_journal.flush()
+        self.unsaved_responses.clear()
         self.dirty = False
 
 
@@ -888,6 +910,8 @@ def run_parallel_openai_analysis(
                             f"{item.analysis_name} row {item.row_number} "
                             f"failed: {error}") from error
                     cache.responses[future_to_cache_key[future]] = dict(result)
+                    cache.unsaved_responses[future_to_cache_key[future]] = dict(
+                        result)
                     cache.dirty = True
                     cache.save()
                     for item in items:
