@@ -4,3 +4,5 @@ __pycache__/
 secrets.txt
 secrets/
 openai_key.txt
+*.openai_cache.json
+*.openai_cache.json.jsonl
