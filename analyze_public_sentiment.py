@@ -591,7 +591,6 @@ def call_openai_analysis(
                     }
                 },
             )
-            break
         except Exception as error:
             final_attempt = attempt_index == MAX_OPENAI_ATTEMPTS - 1
             if final_attempt or not is_retryable_openai_error(error):
@@ -603,24 +602,64 @@ def call_openai_analysis(
                     f"{MAX_OPENAI_ATTEMPTS} failed; retrying in "
                     f"{backoff_seconds:.1f}s ({error})")
             time.sleep(backoff_seconds)
+            continue
 
-    try:
-        result = json.loads(response.output_text)
-    except json.JSONDecodeError as error:
-        raise ConfigError(
-            f"OpenAI response was not valid JSON: {response.output_text}"
-        ) from error
+        final_attempt = attempt_index == MAX_OPENAI_ATTEMPTS - 1
+        try:
+            result = json.loads(response.output_text)
+        except json.JSONDecodeError as error:
+            if final_attempt:
+                raise ConfigError(
+                    "OpenAI response was not valid JSON after "
+                    f"{MAX_OPENAI_ATTEMPTS} attempts: {response.output_text}"
+                ) from error
+            backoff_seconds = min(60, 2 ** attempt_index) + random.random()
+            if retry_logger is not None:
+                retry_logger(
+                    f"{request_label}: OpenAI attempt {attempt_index + 1}/"
+                    f"{MAX_OPENAI_ATTEMPTS} returned invalid JSON; retrying "
+                    f"in {backoff_seconds:.1f}s")
+            time.sleep(backoff_seconds)
+            continue
 
-    if not isinstance(result, dict):
-        raise ConfigError(
-            f"OpenAI response JSON must be an object: {response.output_text}")
-    required_fields = {"label", "confidence", "one_sentence_rationale", "evidence_quote"}
-    missing_fields = sorted(required_fields.difference(result))
-    if missing_fields:
-        raise ConfigError(
-            f"OpenAI response missing required field(s): "
-            f"{', '.join(missing_fields)}")
-    return result
+        if not isinstance(result, dict):
+            if final_attempt:
+                raise ConfigError(
+                    "OpenAI response JSON must be an object after "
+                    f"{MAX_OPENAI_ATTEMPTS} attempts: {response.output_text}")
+            backoff_seconds = min(60, 2 ** attempt_index) + random.random()
+            if retry_logger is not None:
+                retry_logger(
+                    f"{request_label}: OpenAI attempt {attempt_index + 1}/"
+                    f"{MAX_OPENAI_ATTEMPTS} returned non-object JSON; "
+                    f"retrying in {backoff_seconds:.1f}s")
+            time.sleep(backoff_seconds)
+            continue
+
+        required_fields = {
+            "label",
+            "confidence",
+            "one_sentence_rationale",
+            "evidence_quote",
+        }
+        missing_fields = sorted(required_fields.difference(result))
+        if missing_fields:
+            if final_attempt:
+                raise ConfigError(
+                    "OpenAI response missing required field(s) after "
+                    f"{MAX_OPENAI_ATTEMPTS} attempts: "
+                    f"{', '.join(missing_fields)}")
+            backoff_seconds = min(60, 2 ** attempt_index) + random.random()
+            if retry_logger is not None:
+                retry_logger(
+                    f"{request_label}: OpenAI attempt {attempt_index + 1}/"
+                    f"{MAX_OPENAI_ATTEMPTS} returned incomplete JSON; "
+                    f"retrying in {backoff_seconds:.1f}s")
+            time.sleep(backoff_seconds)
+            continue
+        return result
+
+    raise ConfigError(f"OpenAI request failed after {MAX_OPENAI_ATTEMPTS} attempts")
 
 
 def collect_analysis_items(
@@ -819,6 +858,7 @@ def run_parallel_openai_analysis(
                             f"failed: {error}") from error
                     cache.responses[future_to_cache_key[future]] = dict(result)
                     cache.dirty = True
+                    cache.save()
                     for item in items:
                         results.append(AnalysisResult(
                             item=item,
