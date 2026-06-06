@@ -19,6 +19,8 @@ openai:
   model: "gpt-5.4-mini"
   key: "../secrets/openai_key.txt"
   cache_file: "../data/openai_analysis_cache.json"
+  request_timeout_seconds: 120
+  stall_log_seconds: 30
 ```
 
 An analysis can use headline-only input by omitting `input_columns.body`. Output column names may use `{model}`, which is expanded from the configured OpenAI model name:
