@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
+import hashlib
 import json
 import random
 import re
@@ -92,8 +93,93 @@ class RuntimeConfig:
     input_file: Path
     output_file: Path
     openai_key_file: Path
+    openai_cache_file: Path
     openai_model: str
     analyses: tuple[AnalysisConfig, ...]
+
+
+@dataclass
+class OpenAIAnalysisCache:
+    """Local cache for parsed OpenAI analysis responses."""
+
+    cache_file: Path
+    responses: dict[str, dict[str, str]]
+    dirty: bool = False
+
+    @classmethod
+    def load(cls, cache_file: Path) -> "OpenAIAnalysisCache":
+        """Load cached OpenAI responses from disk.
+
+        Args:
+            cache_file: JSON cache file path.
+
+        Returns:
+            Loaded cache instance.
+
+        Raises:
+            ConfigError: If the cache file exists but is invalid.
+        """
+        if not cache_file.exists():
+            return cls(cache_file=cache_file, responses={})
+        try:
+            cache_data = json.loads(cache_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise ConfigError(
+                f"OpenAI cache file is invalid JSON: {cache_file}") from error
+        if not isinstance(cache_data, dict):
+            raise ConfigError(
+                f"OpenAI cache file must contain a mapping: {cache_file}")
+        responses = cache_data.get("responses")
+        if not isinstance(responses, dict):
+            raise ConfigError(
+                f"OpenAI cache file is missing a responses mapping: {cache_file}")
+        return cls(cache_file=cache_file, responses=responses)
+
+    def cache_key(self, model: str, prompt: str, article_text: str) -> str:
+        """Build a cache key for an OpenAI analysis request.
+
+        Args:
+            model: OpenAI model name.
+            prompt: System prompt text.
+            article_text: User article text.
+
+        Returns:
+            SHA-256 cache key for the request.
+        """
+        cache_payload = json.dumps(
+            {
+                "model": model,
+                "prompt": prompt,
+                "article_text": article_text,
+                "schema": ANALYSIS_RESPONSE_SCHEMA,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()
+
+    def save(self) -> None:
+        """Write changed cache entries to disk."""
+        if not self.dirty:
+            return
+        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary_cache_file = self.cache_file.with_suffix(
+            f"{self.cache_file.suffix}.tmp")
+        temporary_cache_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "responses": self.responses,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        temporary_cache_file.replace(self.cache_file)
+        self.dirty = False
 
 
 def parse_args() -> argparse.Namespace:
@@ -293,6 +379,13 @@ def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
     key_file = resolve_config_path(
         require_string(openai_config, "key", "config.openai"), config_dir)
     openai_model = require_string(openai_config, "model", "config.openai")
+    cache_file_value = openai_config.get("cache_file")
+    if cache_file_value is None:
+        openai_cache_file = config_path.resolve().with_suffix(".openai_cache.json")
+    elif isinstance(cache_file_value, str) and cache_file_value.strip():
+        openai_cache_file = resolve_config_path(cache_file_value, config_dir)
+    else:
+        raise ConfigError("Missing or invalid string: config.openai.cache_file")
 
     validate_required_file(input_file, "Input Excel file")
     validate_required_file(key_file, "OpenAI key file")
@@ -342,6 +435,7 @@ def validate_config(config: dict[str, Any], config_path: Path) -> RuntimeConfig:
         input_file=input_file,
         output_file=output_file,
         openai_key_file=key_file,
+        openai_cache_file=openai_cache_file,
         openai_model=openai_model,
         analyses=tuple(analyses),
     )
@@ -553,7 +647,8 @@ def run_parallel_openai_analysis(
         client: Any,
         model: str,
         analysis_batches: list[AnalysisBatch],
-        max_workers: int) -> list[AnalysisResult]:
+        max_workers: int,
+        cache: OpenAIAnalysisCache) -> list[AnalysisResult]:
     """Analyze prepared rows across all analyses with progress reporting.
 
     Args:
@@ -561,6 +656,7 @@ def run_parallel_openai_analysis(
         model: OpenAI model configured for the run.
         analysis_batches: Prepared worksheet rows grouped by analysis.
         max_workers: Maximum concurrent OpenAI calls across all analyses.
+        cache: OpenAI response cache.
 
     Returns:
         Results for completed OpenAI calls.
@@ -587,7 +683,9 @@ def run_parallel_openai_analysis(
     worker_count = min(max_workers, len(all_work_items))
     results = []
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        future_to_item = {}
+        future_to_items = {}
+        future_to_cache_key = {}
+        pending_futures_by_cache_key = {}
         progress_bars = {}
         try:
             for position, analysis_batch in enumerate(analysis_batches):
@@ -600,28 +698,48 @@ def run_parallel_openai_analysis(
                     position=position,
                 )
                 for item in analysis_batch.work_items:
+                    cache_key = cache.cache_key(model, analysis_batch.prompt, item.text)
+                    cached_result = cache.responses.get(cache_key)
+                    if isinstance(cached_result, dict):
+                        results.append(AnalysisResult(
+                            item=item,
+                            label=cached_result["label"],
+                            evidence_quote=cached_result["evidence_quote"],
+                        ))
+                        progress_bars[item.analysis_name].update(1)
+                        continue
+                    if cache_key in pending_futures_by_cache_key:
+                        future_to_items[
+                            pending_futures_by_cache_key[cache_key]].append(item)
+                        continue
                     future = executor.submit(
                         call_openai_analysis,
                         client,
                         model,
                         analysis_batch.prompt,
                         item.text)
-                    future_to_item[future] = item
+                    pending_futures_by_cache_key[cache_key] = future
+                    future_to_items[future] = [item]
+                    future_to_cache_key[future] = cache_key
 
-            for future in as_completed(future_to_item):
-                item = future_to_item[future]
+            for future in as_completed(future_to_items):
+                items = future_to_items[future]
                 try:
                     result = future.result()
                 except ConfigError as error:
+                    item = items[0]
                     raise ConfigError(
                         f"{item.analysis_name} row {item.row_number} failed: "
                         f"{error}") from error
-                results.append(AnalysisResult(
-                    item=item,
-                    label=result["label"],
-                    evidence_quote=result["evidence_quote"],
-                ))
-                progress_bars[item.analysis_name].update(1)
+                cache.responses[future_to_cache_key[future]] = dict(result)
+                cache.dirty = True
+                for item in items:
+                    results.append(AnalysisResult(
+                        item=item,
+                        label=result["label"],
+                        evidence_quote=result["evidence_quote"],
+                    ))
+                    progress_bars[item.analysis_name].update(1)
         finally:
             for progress_bar in progress_bars.values():
                 progress_bar.close()
@@ -718,6 +836,7 @@ def process_workbook(
     if max_workers < 1:
         raise ConfigError("--max-workers must be at least 1")
     client = create_openai_client(runtime_config.openai_key_file)
+    cache = OpenAIAnalysisCache.load(runtime_config.openai_cache_file)
     workbook = load_workbook(runtime_config.input_file)
     analysis_batches = collect_analysis_batches(
         workbook, runtime_config, limit_analysis_calls)
@@ -726,7 +845,9 @@ def process_workbook(
         runtime_config.openai_model,
         analysis_batches,
         max_workers,
+        cache,
     )
+    cache.save()
     for analysis_result in analysis_results:
         item = analysis_result.item
         worksheet = workbook[item.worksheet_name]
@@ -761,6 +882,7 @@ def main() -> None:
     print(f"- input_file: {runtime_config.input_file}")
     print(f"- output_file: {runtime_config.output_file}")
     print(f"- openai_key_file: {runtime_config.openai_key_file}")
+    print(f"- openai_cache_file: {runtime_config.openai_cache_file}")
     for analysis_config in runtime_config.analyses:
         print(f"- {analysis_config.name}_prompt_file: {analysis_config.prompt_file}")
     print(f"Analyzed {len(work_items)} article text item(s).")
