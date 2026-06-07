@@ -1,4 +1,4 @@
-You are classifying the overall sentiment toward aquaculture expressed in a news article.
+You are classifying the sentiment toward aquaculture expressed by a news article headline.
 
 The article has already been assigned to one of these aquaculture categories outside this prompt:
 - seaweed aquaculture
@@ -6,7 +6,9 @@ The article has already been assigned to one of these aquaculture categories out
 
 Use the supplied aquaculture category only as context. Do not classify the aquaculture category.
 
-Classify the article's overall representation of aquaculture. Consider the article's economic, environmental, social, policy, industry, scientific, and community framing.
+The text to classify contains the article headline first, followed by a blank line and then the article body. Classify the sentiment expressed by the headline. Use the body only as context to understand ambiguous headline wording, identify what aquaculture activity the headline refers to, and avoid misreading abbreviations or short references. Do not let body-only favorable or unfavorable details override a neutral headline.
+
+Classify the headline's representation of aquaculture itself. Consider the economic, environmental, social, policy, industry, scientific, food-safety, and community framing expressed in the headline, but classify the sentiment toward aquaculture activity, aquaculture products, aquaculture companies, aquaculture projects, or the aquaculture sector. Do not classify sentiment toward unrelated government process, enforcement action, broader economic conditions, non-aquaculture threats, or the author's writing tone.
 
 Allowed labels:
 - positive
@@ -14,20 +16,30 @@ Allowed labels:
 - neutral
 
 Definitions:
-- positive: The article presents aquaculture in a mostly favorable way, including as economically beneficial, sustainable, innovative, expanding, job-supporting, investment-worthy, beneficial to communities, or otherwise promising.
-- negative: The article presents aquaculture in a mostly unfavorable way, including as environmentally harmful, economically risky, socially controversial, opposed by stakeholders, poorly regulated, damaging to communities, or otherwise concerning.
-- neutral: The article discusses aquaculture in a mainly descriptive, factual, or balanced way without clear positive or negative framing.
+- positive: The headline presents aquaculture in a mostly favorable way, such as successful, safe, compliant, beneficial, supported, welcomed, promoted, growing, boosting income or jobs, environmentally or socially responsible, economically strong, or clearly valuable to producers, consumers, communities, or the sector.
+- negative: The headline presents aquaculture in a mostly unfavorable way, such as harmful, illegal, polluting, unsafe, diseased, poorly controlled, damaging to communities or ecosystems, strongly opposed, economically failing, threatened, attacked, shut down, or otherwise a direct source of concern.
+- neutral: The headline discusses aquaculture in a mainly descriptive, factual, procedural, administrative, or balanced way without clear positive or negative headline-level framing toward aquaculture itself.
 
 Classification guidance:
-- Favorable government, institutional, industry, scientific, environmental, economic, or community claims can support a positive label when the article presents them favorably.
-- Critical government, institutional, industry, scientific, environmental, economic, or community claims can support a negative label when the article presents them unfavorably.
-- Do not require sentiment to come from local residents or public commenters. The task is overall article sentiment, not public/community sentiment.
-- Choose neutral for articles that mainly report facts, numbers, logistics, or current conditions without clear favorable or unfavorable framing.
-- Choose neutral when positive and negative framing are both present without a clear dominant direction.
+- Use neutral as the default when the headline mainly reports facts, numbers, logistics, current conditions, routine announcements, or procedural updates.
+- Choose neutral for headlines about planning, studies, meetings, roundtables, lease applications, proposed farms, financing, formalization, registration, licensing, permitting, technical assistance, compliance processes, administrative modernization, company transactions, or routine project status unless the headline itself clearly frames aquaculture favorably or unfavorably.
+- Do not choose positive merely because the body says officials, companies, banks, or program administrators expect aquaculture to create jobs, increase income, improve competitiveness, boost exports, support food supply, attract investment, or expand in the future.
+- Choose positive when the headline clearly validates or favors aquaculture itself, including headlines about promotion, support, welcomed action, strong demand, record growth, product safety, certification, compliance, successful outcomes, or aquaculture boosting income, jobs, sustainability, food supply, or communities.
+- Do not choose negative merely because the body mentions lawsuits, delays, permitting deadlocks, denied permits, administrative obstacles, business losses, market difficulties, general farmer hardship, illegal imports, smuggling, or background controversy.
+- Choose negative when the headline's unfavorable framing is about aquaculture itself, including aquaculture activity described as illegal, environmentally harmful, polluting, unsafe, diseased, damaging, strongly opposed, poorly regulated, threatening livelihoods or ecosystems, under attack, shut down, banned, or otherwise harmful to affected people, communities, wild species, or ecosystems.
+- When the headline discusses regulation, litigation, enforcement, conservation, or cleanup, classify sentiment based on how the headline portrays the aquaculture activity, not whether the government or court action is portrayed favorably or unfavorably.
+- When aquaculture is portrayed in the headline as being harmed by outside actors or conditions, such as smuggling, illegal imports, pests, accidents, weak markets, administrative barriers, or proposed reductions, classify the sentiment toward aquaculture as negative if the headline emphasizes harm or threat to the aquaculture sector or aquaculture workers.
+- Do not let one favorable or critical body quote override the classification when the headline is mainly neutral or balanced.
+- Favorable government, institutional, industry, scientific, environmental, economic, or community claims can support a positive label only when they are central to the headline's framing of aquaculture itself.
+- Critical government, institutional, industry, scientific, environmental, economic, or community claims can support a negative label only when they are central to the headline's framing of aquaculture itself.
+- Do not require sentiment to come from local residents or public commenters. The task is headline sentiment, not public/community sentiment.
+- Choose neutral when positive and negative headline framing are both present without a clear dominant direction.
 
 Evidence quote requirements:
-- For positive or negative labels, evidence_quote must be a short quote that directly supports the overall sentiment classification.
-- For neutral labels, evidence_quote should quote the closest relevant passage showing descriptive, factual, balanced, or otherwise non-evaluative aquaculture coverage.
+- Prefer evidence quotes from the headline because the label is based on headline sentiment.
+- For positive or negative labels, evidence_quote must be a short quote that directly supports the headline sentiment classification.
+- For neutral labels, evidence_quote should quote the closest relevant headline passage showing descriptive, factual, balanced, or otherwise non-evaluative aquaculture coverage.
+- Use a body quote only when the headline is ambiguous and the body context supports the same headline-level classification.
 - If no useful evidence quote exists for a neutral label, return an empty string for evidence_quote.
 
 Return only valid JSON with this shape:
