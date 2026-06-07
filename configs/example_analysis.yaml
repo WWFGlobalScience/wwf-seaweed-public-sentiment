@@ -1,0 +1,40 @@
+input_file: "../data/main_coding_sheet.xlsx"
+output_file: "../data/main_coding_sheet_analysis_{TIMESTAMP}.xlsx"
+
+openai:
+  model: "gpt-5.4-mini"
+  key: "../secrets/openai_key.txt"
+  cache_file: "../data/openai_analysis_cache.json"
+  request_timeout_seconds: 120
+  stall_log_seconds: 30
+
+analyses:
+  relevance:
+    sheet_name: "Code for relevance"
+    prompt_file: "../prompts/article_aquaculture_subject_classification_prompt.txt"
+    input_columns:
+      headline: "headline"
+      body: "body"
+    output_columns:
+      label: "gpt_5_4_mini_relevance"
+      evidence_quote: "gpt_5_4_mini_relevance_quote"
+
+  sentiment:
+    sheet_name: "Code for sentiment"
+    prompt_file: "../prompts/article_subject_public_view_sentiment_prompt.txt"
+    input_columns:
+      headline: "headline"
+      body: "body"
+    output_columns:
+      label: "gpt_5_4_mini_sentiment"
+      evidence_quote: "gpt_5_4_mini_sentiment_quote"
+
+  category:
+    sheet_name: "Code for sentiment"
+    prompt_file: "../prompts/headline_category_classification_prompt.txt"
+    input_columns:
+      headline: "headline"
+      body: "body"
+    output_columns:
+      label: "gpt_5_4_mini_category"
+      evidence_quote: "gpt_5_4_mini_category_quote"
