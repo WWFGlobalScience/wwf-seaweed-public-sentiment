@@ -4,9 +4,25 @@ This repository contains a reproducible Excel-to-OpenAI workflow for classifying
 
 ## Methodology
 
-This workflow uses a fixed OpenAI GPT model and fixed prompt instructions to classify articles from a human-coded validation spreadsheet. Each configured analysis combines the article headline with the article body text, sends that text to the model with a task-specific prompt, and requires the model to return structured JSON containing a label, confidence value, one-sentence rationale, and short evidence quote. The script writes the label and evidence quote to the output workbook, then adds reviewer-match columns and formula-based summary metrics when the expected human reviewer columns are present.
+This workflow treats automated article coding as a reproducible extension of the human review protocol, not as a retraining exercise. The source workbook contains double-coded validation examples for article relevance, article category, and sentiment. The human coding instructions were translated into fixed prompts for a specified OpenAI GPT model, then refined by reviewing cases where model outputs disagreed with reviewer labels.
 
-Three article-coding tasks are currently implemented.
+The method has three classification tasks:
+
+- Article relevance: determine whether an item is a real English news story, opinion piece, or editorial that substantively discusses aquaculture, and whether the primary subject is seaweed aquaculture, other aquaculture, or irrelevant to the coding task.
+- Sentiment: classify the headline-level sentiment toward aquaculture as positive, negative, or neutral. The article body is used as context for interpreting the headline, but body-only claims do not override a neutral headline.
+- Article category: classify articles in the sentiment sheet as primarily about seaweed aquaculture or other aquaculture.
+
+The main methodological challenge is that the human categories are intentionally simple, while the articles are not. Many articles mix neutral reporting with promotional claims, regulatory process, controversy, or economic projections. Early prompt versions tended to over-classify positive sentiment when an article body included government or industry claims about growth, jobs, investment, or future benefits. Reviewing disagreements showed that the human sentiment task was anchored to headline sentiment, so the current sentiment method gives priority to the headline and treats the article body as supporting context only.
+
+The neutral category is the hardest boundary. It often includes routine announcements, administrative updates, project planning, funding, permitting, formalization, business transactions, and factual descriptions. Those items can contain favorable or unfavorable material in the body, but the method classifies them as neutral unless the headline itself clearly frames aquaculture positively or negatively. This makes the automated coding more consistent with the human instructions and reduces the tendency to infer sentiment from background details.
+
+The approach works best when the goal is consistent large-scale classification against a documented coding scheme. It is auditable because each model label is accompanied by a supporting quote and is compared directly with the human reviewer labels in the output workbook. It is also reproducible because the model, prompts, input sheets, input columns, and output columns are fixed in configuration. If the model or prompts are changed later, that should be treated as a new version of the coding method and documented separately.
+
+The validation results should be interpreted in light of reviewer agreement. Positive and negative cases are usually clearer, while neutral cases have more human disagreement and remain the most difficult class. The workbook therefore reports whether the model matched at least one reviewer and includes per-label match rates, rather than hiding these differences behind a single overall accuracy number.
+
+## Output Workbook
+
+The output workbook is a copy of the input workbook with model-generated labels, evidence quotes, and reviewer-match summaries added to the configured sheets.
 
 In the `Code for relevance` sheet, the relevance analysis classifies whether each article is substantively about seaweed aquaculture, primarily about other aquaculture, or irrelevant to the aquaculture coding task. The output columns are:
 
@@ -25,9 +41,13 @@ The `Code for sentiment` sheet also includes an article category analysis. This 
 
 When the workbook includes the expected human reviewer columns, the script also adds reviewer-match validation columns. For each configured analysis, `{model}_{analysis}_matches_reviewer` records whether the model label matched either reviewer on that row. The adjacent `{model}_{analysis}_summary_metric` and `{model}_{analysis}_summary_value` columns report the overall match rate and each label-specific match rate using visible Excel formulas. These formulas are intended to make the comparison auditable inside the workbook.
 
-For reproducibility, the model name, prompt files, input sheets, input columns, and output columns are all recorded in a YAML configuration file. The same configuration should be used for all years or article batches included in a single analysis. If the model or prompts are changed in the future, that change should be treated as a new version of the classification method and documented separately.
+## Technical Details
 
-The workflow also caches OpenAI responses by model, prompt text, article text, and response schema. This prevents repeated API calls for identical requests and makes long runs resumable. Transient OpenAI or network failures are retried, malformed JSON responses are retried, and successful responses are written to the local cache as they complete.
+For reproducibility, the model name, prompt files, input sheets, input columns, and output columns are all recorded in a YAML configuration file. The same configuration should be used for all years or article batches included in a single analysis.
+
+Each configured analysis combines the article headline with the article body text and sends that text to the model with the task-specific prompt. The response is constrained to contain a label, confidence value, one-sentence rationale, and short evidence quote. The script writes the label and evidence quote to the output workbook.
+
+The workflow caches OpenAI responses by model, prompt text, article text, and response schema. This prevents repeated API calls for identical requests and makes long runs resumable. Transient OpenAI or network failures are retried, malformed responses are retried, and successful responses are written to the local cache as they complete.
 
 ## Required Files
 
