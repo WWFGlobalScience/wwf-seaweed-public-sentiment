@@ -656,16 +656,16 @@ def add_sentiment_match_outputs(
         f"${get_column_letter(match_column)}${last_data_row}")
     summary_formula_by_label = {
         "total": (
-            f'=IFERROR(COUNTIF({match_range},TRUE)/'
-            f'(COUNTIF({match_range},TRUE)+COUNTIF({match_range},FALSE)),"")'
+            f'=COUNTIF({match_range},TRUE)/'
+            f'(COUNTIF({match_range},TRUE)+COUNTIF({match_range},FALSE))'
         ),
         **{
             label: (
-                f'=IFERROR(SUMPRODUCT(--({predicted_range}="{label}"),'
+                f'=SUMPRODUCT(--({predicted_range}="{label}"),'
                 f'--((({reviewer_ranges[0]}="{label}")+'
                 f'({reviewer_ranges[1]}="{label}"))>0))/'
                 f'SUMPRODUCT(--((({reviewer_ranges[0]}="{label}")+'
-                f'({reviewer_ranges[1]}="{label}"))>0)),"")'
+                f'({reviewer_ranges[1]}="{label}"))>0))'
             )
             for label in SENTIMENT_LABELS
         },
