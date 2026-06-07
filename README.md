@@ -4,7 +4,7 @@ This repository contains a reproducible Excel-to-OpenAI workflow for classifying
 
 ## Methodology
 
-This workflow uses a fixed OpenAI GPT model and fixed prompt instructions to classify articles from a human-coded validation spreadsheet. Each configured analysis combines the article headline with the article body text, sends that text to the model with a task-specific prompt, and requires the model to return structured JSON containing a label, confidence value, one-sentence rationale, and short evidence quote. The script writes only the label and evidence quote to the output workbook so model classifications can be compared directly with existing human reviewer columns.
+This workflow uses a fixed OpenAI GPT model and fixed prompt instructions to classify articles from a human-coded validation spreadsheet. Each configured analysis combines the article headline with the article body text, sends that text to the model with a task-specific prompt, and requires the model to return structured JSON containing a label, confidence value, one-sentence rationale, and short evidence quote. The script writes the label and evidence quote to the output workbook, then adds reviewer-match columns and formula-based summary metrics when the expected human reviewer columns are present.
 
 Three article-coding tasks are currently implemented.
 
@@ -13,7 +13,7 @@ In the `Code for relevance` sheet, the relevance analysis classifies whether eac
 - `gpt_5_4_mini_relevance`: model relevance/category label, using `irrelevant`, `other aquaculture`, or `seaweed aquaculture`.
 - `gpt_5_4_mini_relevance_quote`: short quote supporting the relevance/category label.
 
-In the `Code for sentiment` sheet, the sentiment analysis classifies the sentiment represented in the article as positive, neutral, or negative. This task is intended to align with the human coding instructions for article sentiment rather than the author's writing tone alone. The output columns are:
+In the `Code for sentiment` sheet, the sentiment analysis classifies the sentiment expressed by the article headline as positive, neutral, or negative. The article body is provided only as context for interpreting ambiguous headline wording. This task is intended to align with the human coding instructions for headline sentiment rather than the author's writing tone or full-article sentiment. The output columns are:
 
 - `gpt_5_4_mini_sentiment`: model sentiment label, using `positive`, `neutral`, or `negative`.
 - `gpt_5_4_mini_sentiment_quote`: short quote supporting the sentiment label.
@@ -22,6 +22,8 @@ The `Code for sentiment` sheet also includes an article category analysis. This 
 
 - `gpt_5_4_mini_category`: model article-category label, using `seaweed aquaculture` or `other aquaculture`.
 - `gpt_5_4_mini_category_quote`: short quote supporting the article-category label.
+
+When the workbook includes the expected human reviewer columns, the script also adds reviewer-match validation columns. For each configured analysis, `{model}_{analysis}_matches_reviewer` records whether the model label matched either reviewer on that row. The adjacent `{model}_{analysis}_summary_metric` and `{model}_{analysis}_summary_value` columns report the overall match rate and each label-specific match rate using visible Excel formulas. These formulas are intended to make the comparison auditable inside the workbook.
 
 For reproducibility, the model name, prompt files, input sheets, input columns, and output columns are all recorded in a YAML configuration file. The same configuration should be used for all years or article batches included in a single analysis. If the model or prompts are changed in the future, that change should be treated as a new version of the classification method and documented separately.
 
@@ -146,7 +148,7 @@ The script writes a new Excel workbook to the configured `output_file` path. Wit
 data/main_coding_sheet_analysis_2026-06-05-18-30-00.xlsx
 ```
 
-The output workbook is a copy of the input workbook with the configured GPT output columns added or populated in the relevant sheets.
+The output workbook is a copy of the input workbook with the configured GPT output columns added or populated in the relevant sheets. When reviewer columns are present, the workbook also includes reviewer-match and match-rate summary columns for relevance, sentiment, and category. All worksheets are saved at 100% zoom.
 
 ## Runtime Notes
 
