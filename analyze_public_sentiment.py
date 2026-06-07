@@ -26,6 +26,9 @@ DEFAULT_STALL_LOG_SECONDS = 30.0
 MAX_OPENAI_ATTEMPTS = 5
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 EXCEL_ILLEGAL_CHARACTERS_RE = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
+SENTIMENT_ANALYSIS_NAME = "sentiment"
+REVIEWER_SENTIMENT_COLUMNS = ("Reviewer1_Sentiment", "Reviewer2_Sentiment")
+SENTIMENT_LABELS = ("positive", "negative", "neutral")
 ANALYSIS_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -533,6 +536,105 @@ def ensure_output_column(
     worksheet.cell(row=1, column=column_index).value = column_name
     header_map[column_name] = column_index
     return column_index
+
+
+def add_sentiment_match_outputs(
+        workbook: Any, runtime_config: RuntimeConfig) -> None:
+    """Add reviewer-match validation outputs for the sentiment analysis.
+
+    Args:
+        workbook: openpyxl workbook after configured analyses have been written.
+        runtime_config: Resolved runtime configuration used for the run.
+    """
+    sentiment_config = next(
+        (
+            analysis_config
+            for analysis_config in runtime_config.analyses
+            if analysis_config.name == SENTIMENT_ANALYSIS_NAME
+        ),
+        None,
+    )
+    if sentiment_config is None:
+        return
+
+    worksheet = workbook[sentiment_config.sheet_name]
+    header_map = map_header_columns(worksheet)
+    reviewer_columns = [
+        header_map[column_name]
+        for column_name in REVIEWER_SENTIMENT_COLUMNS
+        if column_name in header_map
+    ]
+    if (
+            sentiment_config.output_label_column not in header_map or
+            len(reviewer_columns) != len(REVIEWER_SENTIMENT_COLUMNS)):
+        return
+
+    predicted_column = header_map[sentiment_config.output_label_column]
+    match_column = ensure_output_column(
+        worksheet,
+        header_map,
+        f"{sentiment_config.output_label_column}_matches_reviewer",
+    )
+    summary_columns = {
+        "total": ensure_output_column(
+            worksheet,
+            header_map,
+            f"{sentiment_config.output_label_column}_match_rate",
+        ),
+        **{
+            label: ensure_output_column(
+                worksheet,
+                header_map,
+                f"{sentiment_config.output_label_column}_{label}_match_rate",
+            )
+            for label in SENTIMENT_LABELS
+        },
+    }
+    match_counts = {
+        label: {"matched": 0, "total": 0}
+        for label in ("total", *SENTIMENT_LABELS)
+    }
+
+    for row_number in range(2, worksheet.max_row + 1):
+        predicted = worksheet.cell(
+            row=row_number, column=predicted_column).value
+        predicted_label = (
+            str(predicted).strip().lower()
+            if predicted is not None and str(predicted).strip()
+            else "")
+        reviewer_labels = {
+            str(reviewer_value).strip().lower()
+            for reviewer_column in reviewer_columns
+            if (
+                reviewer_value := worksheet.cell(
+                    row=row_number, column=reviewer_column).value
+            ) is not None and str(reviewer_value).strip()
+        }
+        reviewer_labels &= set(SENTIMENT_LABELS)
+        if predicted_label not in SENTIMENT_LABELS or not reviewer_labels:
+            worksheet.cell(row=row_number, column=match_column).value = None
+            continue
+
+        matched_reviewer = predicted_label in reviewer_labels
+        worksheet.cell(
+            row=row_number, column=match_column).value = matched_reviewer
+        match_counts["total"]["total"] += 1
+        if matched_reviewer:
+            match_counts["total"]["matched"] += 1
+        for label in SENTIMENT_LABELS:
+            if label in reviewer_labels:
+                match_counts[label]["total"] += 1
+                if predicted_label == label:
+                    match_counts[label]["matched"] += 1
+
+    for label, column_index in summary_columns.items():
+        counts = match_counts[label]
+        cell = worksheet.cell(row=2, column=column_index)
+        cell.value = (
+            counts["matched"] / counts["total"]
+            if counts["total"]
+            else None)
+        cell.number_format = "0.0%"
 
 
 def create_openai_client(
@@ -1046,6 +1148,7 @@ def process_workbook(
                 EXCEL_ILLEGAL_CHARACTERS_RE.sub(
                     "", analysis_result.evidence_quote))
 
+    add_sentiment_match_outputs(workbook, runtime_config)
     runtime_config.output_file.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(runtime_config.output_file)
     return [analysis_result.item for analysis_result in analysis_results]
