@@ -16,17 +16,15 @@ Allowed labels:
 - neutral
 
 Definitions:
-- positive: The headline explicitly presents aquaculture in a mostly favorable way, such as successful, safe, compliant, beneficial, supported, welcomed, praised, in strong demand, record-setting, award-winning, environmentally or socially responsible, economically strong, or clearly valuable to producers, consumers, communities, or the sector.
-- negative: The headline explicitly presents aquaculture in a mostly unfavorable way, such as harmful, illegal, polluting, unsafe, diseased, poorly controlled, damaging to communities or ecosystems, strongly opposed, economically failing, threatened, attacked, shut down, banned, or otherwise a direct source of concern.
+- positive: The headline presents aquaculture in a mostly favorable way, such as successful, safe, compliant, beneficial, supported, welcomed, promoted, growing, boosting income or jobs, environmentally or socially responsible, economically strong, or clearly valuable to producers, consumers, communities, or the sector.
+- negative: The headline presents aquaculture in a mostly unfavorable way, such as harmful, illegal, polluting, unsafe, diseased, poorly controlled, damaging to communities or ecosystems, strongly opposed, economically failing, threatened, attacked, shut down, or otherwise a direct source of concern.
 - neutral: The headline discusses aquaculture in a mainly descriptive, factual, procedural, administrative, or balanced way without clear positive or negative headline-level framing toward aquaculture itself.
 
 Classification guidance:
-- Use neutral as the default. Only choose positive or negative when the headline itself contains explicit evaluative sentiment toward aquaculture.
-- Choose neutral for headlines that mainly report facts, numbers, logistics, current conditions, routine announcements, or procedural updates.
-- Choose neutral for headlines about planning, studies, research, meetings, roundtables, conferences, summits, expos, visits, training, bills, programs, lease applications, proposed farms, potential farms, financing, funds, spending, investment amounts, formalization, registration, licensing, permitting, technical assistance, compliance processes, administrative modernization, company transactions, construction, facilities, harvests, production, output, or routine project status unless the headline itself clearly frames aquaculture favorably or unfavorably.
-- Treat weak development or activity verbs as neutral unless they are paired with explicit evaluative sentiment. These weak verbs include advance, develop, move forward, promote, support, transform, establish, strengthen, issue, introduce, launch, open, begin, complete, study, discuss, visit, train, fund, spend, invest, announce, eye, seek, and plan.
+- Use neutral as the default when the headline mainly reports facts, numbers, logistics, current conditions, routine announcements, or procedural updates.
+- Choose neutral for headlines about planning, studies, meetings, roundtables, lease applications, proposed farms, financing, formalization, registration, licensing, permitting, technical assistance, compliance processes, administrative modernization, company transactions, or routine project status unless the headline itself clearly frames aquaculture favorably or unfavorably.
 - Do not choose positive merely because the body says officials, companies, banks, or program administrators expect aquaculture to create jobs, increase income, improve competitiveness, boost exports, support food supply, attract investment, or expand in the future.
-- Choose positive when the headline clearly validates or favors aquaculture itself, including headlines about clear benefits, success, praise, welcomed action, strong demand, record growth, product safety, certification, compliance, awards, successful outcomes, or aquaculture explicitly boosting income, jobs, sustainability, food supply, or communities.
+- Choose positive when the headline clearly validates or favors aquaculture itself, including headlines about promotion, support, welcomed action, strong demand, record growth, product safety, certification, compliance, successful outcomes, or aquaculture boosting income, jobs, sustainability, food supply, or communities.
 - Do not choose negative merely because the body mentions lawsuits, delays, permitting deadlocks, denied permits, administrative obstacles, business losses, market difficulties, general farmer hardship, illegal imports, smuggling, or background controversy.
 - Choose negative when the headline's unfavorable framing is about aquaculture itself, including aquaculture activity described as illegal, environmentally harmful, polluting, unsafe, diseased, damaging, strongly opposed, poorly regulated, threatening livelihoods or ecosystems, under attack, shut down, banned, or otherwise harmful to affected people, communities, wild species, or ecosystems.
 - When the headline discusses regulation, litigation, enforcement, conservation, or cleanup, classify sentiment based on how the headline portrays the aquaculture activity, not whether the government or court action is portrayed favorably or unfavorably.
@@ -36,26 +34,6 @@ Classification guidance:
 - Critical government, institutional, industry, scientific, environmental, economic, or community claims can support a negative label only when they are central to the headline's framing of aquaculture itself.
 - Do not require sentiment to come from local residents or public commenters. The task is headline sentiment, not public/community sentiment.
 - Choose neutral when positive and negative headline framing are both present without a clear dominant direction.
-
-Neutral headline examples:
-- "Potential kelp farm in Kodiak" is neutral because it reports a possible project.
-- "Aquaculture facilities worth P23M completed in Iloilo" is neutral because it reports facilities and money spent.
-- "MPEDA to train aquaculture farmers in sea bass fish cultivation" is neutral because it reports training.
-- "Legal framework, advanced technologies key to marine aquaculture" is neutral because it reports policy and technology needs.
-- "CBN spends N1.2bn on aquaculture in Delta" is neutral because it reports program spending.
-- "Project to promote paddy farming, aquaculture" is neutral because it reports a project, even though it uses "promote".
-
-Positive headline examples:
-- "Aquaculture provides major benefits to all" is positive because it explicitly says aquaculture provides benefits.
-- "Seaweed set to boost incomes in the Pacific region" is positive because it explicitly says seaweed will boost incomes.
-- "Conservationists welcome new guide to develop seaweed farming sector" is positive because it reports a favorable reception.
-- "Japanese Algae Farm Receives ASC-MSC Certification for Sustainable Production" is positive because it reports certification and sustainable production.
-- "Kodiak kelp farmers set to crush last year's record" is positive because it reports record-setting performance.
-
-Negative headline examples:
-- "Maine fishermen ask for temporary ban on aquaculture permits" is negative because it reports opposition and a requested ban.
-- "Study finds metal pollution in aquaculture farms" is negative because it reports pollution.
-- "Washington state cancels lease for Atlantic salmon farm" is negative because it reports a cancellation of farm authorization.
 
 Evidence quote requirements:
 - Prefer evidence quotes from the headline because the label is based on headline sentiment.
