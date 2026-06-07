@@ -559,6 +559,26 @@ def add_sentiment_match_outputs(
 
     worksheet = workbook[sentiment_config.sheet_name]
     header_map = map_header_columns(worksheet)
+    old_summary_column_names = {
+        f"{sentiment_config.output_label_column}_match_rate",
+        *{
+            f"{sentiment_config.output_label_column}_{label}_match_rate"
+            for label in SENTIMENT_LABELS
+        },
+    }
+    old_summary_column_indexes = sorted(
+        (
+            header_map[column_name]
+            for column_name in old_summary_column_names
+            if column_name in header_map
+        ),
+        reverse=True,
+    )
+    for column_index in old_summary_column_indexes:
+        worksheet.delete_cols(column_index)
+    if old_summary_column_indexes:
+        header_map = map_header_columns(worksheet)
+
     reviewer_columns = [
         header_map[column_name]
         for column_name in REVIEWER_SENTIMENT_COLUMNS
@@ -582,21 +602,6 @@ def add_sentiment_match_outputs(
             for label in SENTIMENT_LABELS
         },
     }
-    summary_columns = {
-        "total": ensure_output_column(
-            worksheet,
-            header_map,
-            summary_column_names["total"],
-        ),
-        **{
-            label: ensure_output_column(
-                worksheet,
-                header_map,
-                summary_column_names[label],
-            )
-            for label in SENTIMENT_LABELS
-        },
-    }
     summary_metric_column = ensure_output_column(
         worksheet,
         header_map,
@@ -607,10 +612,6 @@ def add_sentiment_match_outputs(
         header_map,
         f"{sentiment_config.output_label_column}_summary_value",
     )
-    match_counts = {
-        label: {"matched": 0, "total": 0}
-        for label in ("total", *SENTIMENT_LABELS)
-    }
 
     for row_number in range(2, worksheet.max_row + 1):
         predicted = worksheet.cell(
@@ -635,32 +636,50 @@ def add_sentiment_match_outputs(
         matched_reviewer = predicted_label in reviewer_labels
         worksheet.cell(
             row=row_number, column=match_column).value = matched_reviewer
-        match_counts["total"]["total"] += 1
-        if matched_reviewer:
-            match_counts["total"]["matched"] += 1
-        for label in SENTIMENT_LABELS:
-            if label in reviewer_labels:
-                match_counts[label]["total"] += 1
-                if predicted_label == label:
-                    match_counts[label]["matched"] += 1
 
-    for summary_row_number, (label, column_index) in enumerate(
-            summary_columns.items(), start=2):
-        counts = match_counts[label]
-        match_rate = (
-            counts["matched"] / counts["total"]
-            if counts["total"]
-            else None)
-        cell = worksheet.cell(row=2, column=column_index)
-        cell.value = match_rate
-        cell.number_format = "0.0%"
+    from openpyxl.utils import get_column_letter
+
+    first_data_row = 2
+    last_data_row = worksheet.max_row
+    predicted_range = (
+        f"${get_column_letter(predicted_column)}${first_data_row}:"
+        f"${get_column_letter(predicted_column)}${last_data_row}")
+    reviewer_ranges = [
+        (
+            f"${get_column_letter(reviewer_column)}${first_data_row}:"
+            f"${get_column_letter(reviewer_column)}${last_data_row}"
+        )
+        for reviewer_column in reviewer_columns
+    ]
+    match_range = (
+        f"${get_column_letter(match_column)}${first_data_row}:"
+        f"${get_column_letter(match_column)}${last_data_row}")
+    summary_formula_by_label = {
+        "total": (
+            f'=IFERROR(COUNTIF({match_range},TRUE)/'
+            f'(COUNTIF({match_range},TRUE)+COUNTIF({match_range},FALSE)),"")'
+        ),
+        **{
+            label: (
+                f'=IFERROR(SUMPRODUCT(--({predicted_range}="{label}"),'
+                f'--((({reviewer_ranges[0]}="{label}")+'
+                f'({reviewer_ranges[1]}="{label}"))>0))/'
+                f'SUMPRODUCT(--((({reviewer_ranges[0]}="{label}")+'
+                f'({reviewer_ranges[1]}="{label}"))>0)),"")'
+            )
+            for label in SENTIMENT_LABELS
+        },
+    }
+
+    for summary_row_number, label in enumerate(
+            ("total", *SENTIMENT_LABELS), start=2):
         worksheet.cell(
             row=summary_row_number,
             column=summary_metric_column).value = summary_column_names[label]
         summary_value_cell = worksheet.cell(
             row=summary_row_number,
             column=summary_value_column)
-        summary_value_cell.value = match_rate
+        summary_value_cell.value = summary_formula_by_label[label]
         summary_value_cell.number_format = "0.0%"
 
 
@@ -1176,6 +1195,9 @@ def process_workbook(
                     "", analysis_result.evidence_quote))
 
     add_sentiment_match_outputs(workbook, runtime_config)
+    for worksheet in workbook.worksheets:
+        worksheet.sheet_view.zoomScale = 100
+        worksheet.sheet_view.zoomScaleNormal = 100
     runtime_config.output_file.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(runtime_config.output_file)
     return [analysis_result.item for analysis_result in analysis_results]
