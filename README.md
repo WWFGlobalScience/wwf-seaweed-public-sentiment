@@ -1,4 +1,4 @@
-# WWF Seaweed Public Sentiment
+# Aquaculture Article Classification and Sentiment Analysis
 
 This repository contains a reproducible workflow for classifying the subject and public sentiment of aquaculture news articles. The core classification routine, `call_openai_analysis()` in `analyze_public_sentiment.py`, is independent of the rest of the pipeline, which is currently engineered to process a specific Excel format.[^excel-format]
 
@@ -42,7 +42,7 @@ For reproducibility, the model name, prompt files, input sheets, input columns, 
 
 Each configured analysis combines the article headline with the article body text and sends that text to the model with the task-specific prompt. The response is constrained to contain a label, confidence value, one-sentence rationale, and short evidence quote. The script writes the label and evidence quote to the output workbook.
 
-The workflow caches OpenAI responses by model, prompt text, article text, and response schema to prevent repeated API calls for identical requests and makes long runs resumable. Transient OpenAI or network failures are retried, malformed responses are retried, and successful responses are written to the local cache as they complete. [also say how the parallelization works]
+The workflow caches OpenAI responses by model, prompt text, article text, and response schema to prevent repeated API calls for identical requests and makes long runs resumable. Transient OpenAI or network failures are retried, malformed responses are retried, and successful responses are written to the local cache as they complete. OpenAI calls are run concurrently across configured analyses using a worker pool, with progress bars shown for each analysis. In our production run, approximately 5,000 article-analysis calls across sentiment, subject, and relevance tasks completed in about 10 minutes.
 
 ### Configuration
 
@@ -134,13 +134,13 @@ configs/analysis_2026_06_05.yaml
 Run a small debug batch first:
 
 ```powershell
-python analyze_public_sentiment.py .\configs\analysis_2026_06_05.yaml -limit-analysis-calls 5 -max-workers 2
+python analyze_public_sentiment.py .\configs\analysis_2026_06_05.yaml --limit-analysis-calls 5 --max-workers 2
 ```
 
 Run the full analysis:
 
 ```powershell
-python analyze_public_sentiment.py .\configs\analysis_2026_06_05.yaml -max-workers 4
+python analyze_public_sentiment.py .\configs\analysis_2026_06_05.yaml --max-workers 4
 ```
 
 The script writes a new Excel workbook to the configured `output_file` path. With the example configuration, output files will look like:
