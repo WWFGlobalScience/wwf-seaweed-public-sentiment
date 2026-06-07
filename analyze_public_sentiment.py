@@ -29,6 +29,12 @@ EXCEL_ILLEGAL_CHARACTERS_RE = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
 SENTIMENT_ANALYSIS_NAME = "sentiment"
 REVIEWER_SENTIMENT_COLUMNS = ("Reviewer1_Sentiment", "Reviewer2_Sentiment")
 SENTIMENT_LABELS = ("positive", "negative", "neutral")
+CATEGORY_ANALYSIS_NAME = "category"
+REVIEWER_CATEGORY_COLUMNS = ("Reviewer1_Category", "Reviewer2_Category")
+CATEGORY_LABELS = ("seaweed aquaculture", "other aquaculture")
+RELEVANCE_ANALYSIS_NAME = "relevance"
+REVIEWER_RELEVANCE_COLUMNS = ("Reviewer1_Relevance", "Reviewer2_Relevance")
+RELEVANCE_LABELS = ("irrelevant", "other aquaculture", "seaweed aquaculture")
 ANALYSIS_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -95,6 +101,15 @@ class AnalysisBatch:
 
 
 @dataclass(frozen=True)
+class ReviewerMatchConfig:
+    """Reviewer validation settings for one configured analysis."""
+
+    analysis_name: str
+    reviewer_columns: tuple[str, str]
+    labels: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     """Resolved runtime configuration for the analysis workflow."""
 
@@ -106,6 +121,25 @@ class RuntimeConfig:
     openai_request_timeout_seconds: float
     stall_log_seconds: float
     analyses: tuple[AnalysisConfig, ...]
+
+
+REVIEWER_MATCH_CONFIGS = (
+    ReviewerMatchConfig(
+        analysis_name=SENTIMENT_ANALYSIS_NAME,
+        reviewer_columns=REVIEWER_SENTIMENT_COLUMNS,
+        labels=SENTIMENT_LABELS,
+    ),
+    ReviewerMatchConfig(
+        analysis_name=CATEGORY_ANALYSIS_NAME,
+        reviewer_columns=REVIEWER_CATEGORY_COLUMNS,
+        labels=CATEGORY_LABELS,
+    ),
+    ReviewerMatchConfig(
+        analysis_name=RELEVANCE_ANALYSIS_NAME,
+        reviewer_columns=REVIEWER_RELEVANCE_COLUMNS,
+        labels=RELEVANCE_LABELS,
+    ),
+)
 
 
 @dataclass
@@ -538,149 +572,152 @@ def ensure_output_column(
     return column_index
 
 
-def add_sentiment_match_outputs(
+def add_reviewer_match_outputs(
         workbook: Any, runtime_config: RuntimeConfig) -> None:
-    """Add reviewer-match validation outputs for the sentiment analysis.
+    """Add reviewer-match validation outputs for configured analyses.
 
     Args:
         workbook: openpyxl workbook after configured analyses have been written.
         runtime_config: Resolved runtime configuration used for the run.
     """
-    sentiment_config = next(
-        (
-            analysis_config
-            for analysis_config in runtime_config.analyses
-            if analysis_config.name == SENTIMENT_ANALYSIS_NAME
-        ),
-        None,
-    )
-    if sentiment_config is None:
-        return
-
-    worksheet = workbook[sentiment_config.sheet_name]
-    header_map = map_header_columns(worksheet)
-    old_summary_column_names = {
-        f"{sentiment_config.output_label_column}_match_rate",
-        *{
-            f"{sentiment_config.output_label_column}_{label}_match_rate"
-            for label in SENTIMENT_LABELS
-        },
-    }
-    old_summary_column_indexes = sorted(
-        (
-            header_map[column_name]
-            for column_name in old_summary_column_names
-            if column_name in header_map
-        ),
-        reverse=True,
-    )
-    for column_index in old_summary_column_indexes:
-        worksheet.delete_cols(column_index)
-    if old_summary_column_indexes:
-        header_map = map_header_columns(worksheet)
-
-    reviewer_columns = [
-        header_map[column_name]
-        for column_name in REVIEWER_SENTIMENT_COLUMNS
-        if column_name in header_map
-    ]
-    if (
-            sentiment_config.output_label_column not in header_map or
-            len(reviewer_columns) != len(REVIEWER_SENTIMENT_COLUMNS)):
-        return
-
-    predicted_column = header_map[sentiment_config.output_label_column]
-    match_column = ensure_output_column(
-        worksheet,
-        header_map,
-        f"{sentiment_config.output_label_column}_matches_reviewer",
-    )
-    summary_column_names = {
-        "total": f"{sentiment_config.output_label_column}_match_rate",
-        **{
-            label: f"{sentiment_config.output_label_column}_{label}_match_rate"
-            for label in SENTIMENT_LABELS
-        },
-    }
-    summary_metric_column = ensure_output_column(
-        worksheet,
-        header_map,
-        f"{sentiment_config.output_label_column}_summary_metric",
-    )
-    summary_value_column = ensure_output_column(
-        worksheet,
-        header_map,
-        f"{sentiment_config.output_label_column}_summary_value",
-    )
-
-    for row_number in range(2, worksheet.max_row + 1):
-        predicted = worksheet.cell(
-            row=row_number, column=predicted_column).value
-        predicted_label = (
-            str(predicted).strip().lower()
-            if predicted is not None and str(predicted).strip()
-            else "")
-        reviewer_labels = {
-            str(reviewer_value).strip().lower()
-            for reviewer_column in reviewer_columns
-            if (
-                reviewer_value := worksheet.cell(
-                    row=row_number, column=reviewer_column).value
-            ) is not None and str(reviewer_value).strip()
-        }
-        reviewer_labels &= set(SENTIMENT_LABELS)
-        if predicted_label not in SENTIMENT_LABELS or not reviewer_labels:
-            worksheet.cell(row=row_number, column=match_column).value = None
-            continue
-
-        matched_reviewer = predicted_label in reviewer_labels
-        worksheet.cell(
-            row=row_number, column=match_column).value = matched_reviewer
-
     from openpyxl.utils import get_column_letter
 
-    first_data_row = 2
-    last_data_row = worksheet.max_row
-    predicted_range = (
-        f"${get_column_letter(predicted_column)}${first_data_row}:"
-        f"${get_column_letter(predicted_column)}${last_data_row}")
-    reviewer_ranges = [
-        (
-            f"${get_column_letter(reviewer_column)}${first_data_row}:"
-            f"${get_column_letter(reviewer_column)}${last_data_row}"
-        )
-        for reviewer_column in reviewer_columns
-    ]
-    match_range = (
-        f"${get_column_letter(match_column)}${first_data_row}:"
-        f"${get_column_letter(match_column)}${last_data_row}")
-    summary_formula_by_label = {
-        "total": (
-            f'=COUNTIF({match_range},TRUE)/'
-            f'(COUNTIF({match_range},TRUE)+COUNTIF({match_range},FALSE))'
-        ),
-        **{
-            label: (
-                f'=SUMPRODUCT(--({predicted_range}="{label}"),'
-                f'--((({reviewer_ranges[0]}="{label}")+'
-                f'({reviewer_ranges[1]}="{label}"))>0))/'
-                f'SUMPRODUCT(--((({reviewer_ranges[0]}="{label}")+'
-                f'({reviewer_ranges[1]}="{label}"))>0))'
-            )
-            for label in SENTIMENT_LABELS
-        },
+    analysis_by_name = {
+        analysis_config.name: analysis_config
+        for analysis_config in runtime_config.analyses
     }
+    for match_config in REVIEWER_MATCH_CONFIGS:
+        analysis_config = analysis_by_name.get(match_config.analysis_name)
+        if analysis_config is None:
+            continue
 
-    for summary_row_number, label in enumerate(
-            ("total", *SENTIMENT_LABELS), start=2):
-        worksheet.cell(
-            row=summary_row_number,
-            column=summary_metric_column).value = summary_column_names[label]
-        summary_value_cell = worksheet.cell(
-            row=summary_row_number,
-            column=summary_value_column)
-        summary_value_cell.value = summary_formula_by_label[label]
-        summary_value_cell.number_format = "0.0%"
+        worksheet = workbook[analysis_config.sheet_name]
+        header_map = map_header_columns(worksheet)
+        old_summary_column_names = {
+            f"{analysis_config.output_label_column}_match_rate",
+            *{
+                f"{analysis_config.output_label_column}_{label}_match_rate"
+                for label in match_config.labels
+            },
+        }
+        old_summary_column_indexes = sorted(
+            (
+                header_map[column_name]
+                for column_name in old_summary_column_names
+                if column_name in header_map
+            ),
+            reverse=True,
+        )
+        for column_index in old_summary_column_indexes:
+            worksheet.delete_cols(column_index)
+        if old_summary_column_indexes:
+            header_map = map_header_columns(worksheet)
+
+        reviewer_columns = [
+            header_map[column_name]
+            for column_name in match_config.reviewer_columns
+            if column_name in header_map
+        ]
+        if (
+                analysis_config.output_label_column not in header_map or
+                len(reviewer_columns) != len(match_config.reviewer_columns)):
+            continue
+
+        predicted_column = header_map[analysis_config.output_label_column]
+        match_column = ensure_output_column(
+            worksheet,
+            header_map,
+            f"{analysis_config.output_label_column}_matches_reviewer",
+        )
+        summary_column_names = {
+            "total": f"{analysis_config.output_label_column}_match_rate",
+            **{
+                label: f"{analysis_config.output_label_column}_{label}_match_rate"
+                for label in match_config.labels
+            },
+        }
+        summary_metric_column = ensure_output_column(
+            worksheet,
+            header_map,
+            f"{analysis_config.output_label_column}_summary_metric",
+        )
+        summary_value_column = ensure_output_column(
+            worksheet,
+            header_map,
+            f"{analysis_config.output_label_column}_summary_value",
+        )
+
+        valid_labels = set(match_config.labels)
+        for row_number in range(2, worksheet.max_row + 1):
+            predicted = worksheet.cell(
+                row=row_number, column=predicted_column).value
+            predicted_label = (
+                str(predicted).strip().lower()
+                if predicted is not None and str(predicted).strip()
+                else "")
+            reviewer_labels = {
+                str(reviewer_value).strip().lower()
+                for reviewer_column in reviewer_columns
+                if (
+                    reviewer_value := worksheet.cell(
+                        row=row_number, column=reviewer_column).value
+                ) is not None and str(reviewer_value).strip()
+            }
+            reviewer_labels &= valid_labels
+            if predicted_label not in valid_labels or not reviewer_labels:
+                worksheet.cell(row=row_number, column=match_column).value = None
+                continue
+
+            matched_reviewer = predicted_label in reviewer_labels
+            worksheet.cell(
+                row=row_number, column=match_column).value = matched_reviewer
+
+        first_data_row = 2
+        last_data_row = worksheet.max_row
+        predicted_range = (
+            f"${get_column_letter(predicted_column)}${first_data_row}:"
+            f"${get_column_letter(predicted_column)}${last_data_row}")
+        reviewer_ranges = [
+            (
+                f"${get_column_letter(reviewer_column)}${first_data_row}:"
+                f"${get_column_letter(reviewer_column)}${last_data_row}"
+            )
+            for reviewer_column in reviewer_columns
+        ]
+        match_range = (
+            f"${get_column_letter(match_column)}${first_data_row}:"
+            f"${get_column_letter(match_column)}${last_data_row}")
+        summary_formula_by_label = {
+            "total": (
+                f'=COUNTIF({match_range},TRUE)/'
+                f'(COUNTIF({match_range},TRUE)+COUNTIF({match_range},FALSE))'
+            ),
+        }
+        for label in match_config.labels:
+            summary_formula_by_label[label] = (
+                f'=(COUNTIFS({predicted_range},"{label}",'
+                f'{reviewer_ranges[0]},"{label}")+'
+                f'COUNTIFS({predicted_range},"{label}",'
+                f'{reviewer_ranges[1]},"{label}")-'
+                f'COUNTIFS({predicted_range},"{label}",'
+                f'{reviewer_ranges[0]},"{label}",'
+                f'{reviewer_ranges[1]},"{label}"))/'
+                f'(COUNTIF({reviewer_ranges[0]},"{label}")+'
+                f'COUNTIF({reviewer_ranges[1]},"{label}")-'
+                f'COUNTIFS({reviewer_ranges[0]},"{label}",'
+                f'{reviewer_ranges[1]},"{label}"))'
+            )
+
+        for summary_row_number, label in enumerate(
+                ("total", *match_config.labels), start=2):
+            worksheet.cell(
+                row=summary_row_number,
+                column=summary_metric_column).value = summary_column_names[label]
+            summary_value_cell = worksheet.cell(
+                row=summary_row_number,
+                column=summary_value_column)
+            summary_value_cell.value = summary_formula_by_label[label]
+            summary_value_cell.number_format = "0.0%"
 
 
 def create_openai_client(
@@ -1194,7 +1231,7 @@ def process_workbook(
                 EXCEL_ILLEGAL_CHARACTERS_RE.sub(
                     "", analysis_result.evidence_quote))
 
-    add_sentiment_match_outputs(workbook, runtime_config)
+    add_reviewer_match_outputs(workbook, runtime_config)
     for worksheet in workbook.worksheets:
         worksheet.sheet_view.zoomScale = 100
         worksheet.sheet_view.zoomScaleNormal = 100
