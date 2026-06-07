@@ -575,21 +575,38 @@ def add_sentiment_match_outputs(
         header_map,
         f"{sentiment_config.output_label_column}_matches_reviewer",
     )
+    summary_column_names = {
+        "total": f"{sentiment_config.output_label_column}_match_rate",
+        **{
+            label: f"{sentiment_config.output_label_column}_{label}_match_rate"
+            for label in SENTIMENT_LABELS
+        },
+    }
     summary_columns = {
         "total": ensure_output_column(
             worksheet,
             header_map,
-            f"{sentiment_config.output_label_column}_match_rate",
+            summary_column_names["total"],
         ),
         **{
             label: ensure_output_column(
                 worksheet,
                 header_map,
-                f"{sentiment_config.output_label_column}_{label}_match_rate",
+                summary_column_names[label],
             )
             for label in SENTIMENT_LABELS
         },
     }
+    summary_metric_column = ensure_output_column(
+        worksheet,
+        header_map,
+        f"{sentiment_config.output_label_column}_summary_metric",
+    )
+    summary_value_column = ensure_output_column(
+        worksheet,
+        header_map,
+        f"{sentiment_config.output_label_column}_summary_value",
+    )
     match_counts = {
         label: {"matched": 0, "total": 0}
         for label in ("total", *SENTIMENT_LABELS)
@@ -627,14 +644,24 @@ def add_sentiment_match_outputs(
                 if predicted_label == label:
                     match_counts[label]["matched"] += 1
 
-    for label, column_index in summary_columns.items():
+    for summary_row_number, (label, column_index) in enumerate(
+            summary_columns.items(), start=2):
         counts = match_counts[label]
-        cell = worksheet.cell(row=2, column=column_index)
-        cell.value = (
+        match_rate = (
             counts["matched"] / counts["total"]
             if counts["total"]
             else None)
+        cell = worksheet.cell(row=2, column=column_index)
+        cell.value = match_rate
         cell.number_format = "0.0%"
+        worksheet.cell(
+            row=summary_row_number,
+            column=summary_metric_column).value = summary_column_names[label]
+        summary_value_cell = worksheet.cell(
+            row=summary_row_number,
+            column=summary_value_column)
+        summary_value_cell.value = match_rate
+        summary_value_cell.number_format = "0.0%"
 
 
 def create_openai_client(
